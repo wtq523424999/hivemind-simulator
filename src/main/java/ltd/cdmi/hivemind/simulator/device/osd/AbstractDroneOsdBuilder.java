@@ -63,7 +63,7 @@ public abstract class AbstractDroneOsdBuilder implements DroneOsdBuilder {
         }
         data.put(OsdField.GEAR.fieldName(), 1);                                   // 档位：1=P档（M4D/M3D/M30/M400 共用）
         data.put(OsdField.HEIGHT_LIMIT.fieldName(), 120);                         // 飞行器限高（米）
-        data.put(OsdField.HOME_DISTANCE.fieldName(), 0.0);                        // 距 Home 点距离
+        data.put(OsdField.HOME_DISTANCE.fieldName(), state.getHomeDistance());
         // distance_limit_status + rth_altitude（M30/M3D/M4D 共有，pushMode=0, rw；M400 Pilot 属性列表未列）
         if (includeDistanceLimitFields()) {
             data.put(OsdField.DISTANCE_LIMIT_STATUS.fieldName(), buildDistanceLimitStatus());
@@ -76,9 +76,10 @@ public abstract class AbstractDroneOsdBuilder implements DroneOsdBuilder {
         data.put(OsdField.NIGHT_LIGHTS_STATE.fieldName(), state.isNightLightsState() ? 1 : 0);  // 夜航灯
         data.put(OsdField.OBSTACLE_AVOIDANCE.fieldName(), buildObstacleAvoidance());  // 避障状态
         data.put(OsdField.STORAGE.fieldName(), buildDroneStorage());             // 存储容量
-        data.put(OsdField.TOTAL_FLIGHT_DISTANCE.fieldName(), 0.0);                // 累计飞行总里程（米）
+        data.put(OsdField.TOTAL_FLIGHT_DISTANCE.fieldName(), state.getTotalFlightDistance());
         data.put(OsdField.TOTAL_FLIGHT_SORTIES.fieldName(), 0);                   // 累计飞行总架次
-        data.put(OsdField.TRACK_ID.fieldName(), "");                              // 轨迹ID（文档未明确，按真机示例）
+        data.put(OsdField.TRACK_ID.fieldName(), state.getCurrentTrackId() == null
+                ? "" : state.getCurrentTrackId());
         // 机型特有字段（如 cameras 数组、负载属性等，由子类追加）
         // 注：payloads（pushMode=1）不在 OSD，由 DockOnlineService.publishDroneState() 在 state topic 上报
         appendDroneSpecific(ctx, data);
@@ -112,7 +113,9 @@ public abstract class AbstractDroneOsdBuilder implements DroneOsdBuilder {
         DeviceState state = ctx.getState();
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("capacity_percent", state.getBatteryPercent());
-        m.put("remain_flight_time", Math.max(0, state.getBatteryPercent() * 30L / 100));
+        m.put("remain_flight_time", state.isRouteTelemetryActive()
+                ? state.getRemainingFlightTimeSeconds()
+                : Math.max(0, state.getBatteryPercent() * 30L / 100));
         m.put("return_home_power", 30);
         m.put("landing_power", 15);
         m.put("batteries", List.of(

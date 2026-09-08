@@ -40,7 +40,7 @@ import java.util.function.BiFunction;
 /**
  * services 下行命令路由与应答处理器。
  * <p>订阅 thing/product/{sn}/services，按 method 路由到对应处理器，统一回 services_reply。</p>
- * <p>未实现的命令统一回 result=0 占位（临时占位项目，保证云端不报错）。</p>
+ * <p>未实现的命令统一回非零 result，并记录 S-2，避免把未覆盖误判为成功。</p>
  */
 @Component
 public class ServiceCommandHandler {
@@ -230,23 +230,21 @@ public class ServiceCommandHandler {
             if (waylineHandler != null) {
                 return waylineHandler.apply(method, data, bid);
             }
-            log.warn("航线命令 {} 未注册处理器，返回占位 result=0", method);
-            return Map.of("result", 0);
+            return unsupported(method, "航线处理器未注册");
         }
         // 直播命令
         if (LIVE_METHODS.contains(method)) {
             if (liveHandler != null) {
                 return liveHandler.apply(method, data);
             }
-            log.warn("直播命令 {} 未注册处理器，返回占位 result=0", method);
-            return Map.of("result", 0);
+            return unsupported(method, "直播处理器未注册");
         }
         // 媒体上传命令
         if (MEDIA_METHODS.contains(method)) {
             if (mediaHandler != null) {
                 return mediaHandler.apply(method, data);
             }
-            return Map.of("result", 0);
+            return unsupported(method, "媒体处理器未注册");
         }
         // DRC 模式切换 + 云控授权（委托 AuthFlowHandler）
         if (authFlowHandler.handles(method)) {
@@ -305,10 +303,14 @@ public class ServiceCommandHandler {
             return otaSimulator.handleService(method, data);
         }
 
-        // 其他未实现的命令：统一占位 result=0
-        log.warn("[S-2] 未覆盖指令占位应答: method={}", method);
-        diagnosticRecorder.record(DiagnosticCode.SIMULATOR_METHOD_NOT_IMPLEMENTED, method, "未覆盖指令占位应答");
-        return Map.of("result", 0);
+        // 其他未实现的命令：稳定拒绝，禁止静默成功。
+        return unsupported(method, "未覆盖指令");
+    }
+
+    private Map<String, Object> unsupported(String method, String reason) {
+        log.warn("[S-2] Services 指令拒绝: method={}, reason={}", method, reason);
+        diagnosticRecorder.record(DiagnosticCode.SIMULATOR_METHOD_NOT_IMPLEMENTED, method, reason);
+        return Map.of("result", 1);
     }
 
     /**

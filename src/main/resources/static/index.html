@@ -603,10 +603,11 @@
                     <el-input v-model="connConfig.app_license" placeholder="留空则不模拟 License 认证"></el-input>
                     <div style="font-size: 12px; color: #909399; line-height: 1.4; margin-top: 4px;">不填写则后端跳过 License 校验，适用于调试阶段</div>
                 </el-form-item>
-                <div class="el-form-item" role="group" aria-label="DJI License">
+                <div v-if="licenseLocked" class="el-form-item" role="group" aria-label="DJI License">
                     <label class="el-form-item__label" style="width: 90px;">DJI License</label>
                     <div class="el-form-item__content">
                         <el-tag type="success" size="small">已锁定（首次注册后无需再次输入）</el-tag>
+                        <el-button type="warning" link size="small" @click="resetLicenseLock">重新输入</el-button>
                     </div>
                 </div>
                 <el-form-item label="组织ID">
@@ -1022,6 +1023,20 @@ const app = createApp({
         // DJI License 是否已锁定：首次注册成功后 localStorage 中存在 locked_app_license
         // 锁定后注册界面隐藏 License 输入行（license 由第三方平台下发，用户再次输入不起作用）
         const licenseLocked = ref(!!localStorage.getItem('locked_app_license'));
+        async function resetLicenseLock() {
+            // A full registration cannot run while the simulator is still online.
+            if (powered.value || online.value || mqttConnected.value) {
+                await fetchJSON('/api/offline', { method: 'POST' });
+                online.value = false;
+                mqttConnected.value = false;
+                powered.value = false;
+            }
+            localStorage.removeItem('locked_app_license');
+            localStorage.setItem('registered', 'false');
+            licenseLocked.value = false;
+            connConfig.app_license = '';
+            ElementPlus.ElMessage.success('DJI License 已解锁，请重新输入并重新注册');
+        }
         const showDeviceInfoDialog = ref(false);
         const showDiagnosticDialog = ref(false);
         const diagnosticLogs = ref([]);
@@ -1963,6 +1978,14 @@ const app = createApp({
 
         // 注册按钮：弹窗确认
         async function doRegister() {
+            // Manual registration must always use the full registration flow.
+            if (powered.value || online.value || mqttConnected.value) {
+                await fetchJSON('/api/offline', { method: 'POST' });
+                online.value = false;
+                mqttConnected.value = false;
+                powered.value = false;
+            }
+            localStorage.setItem('registered', 'false');
             await registerToPlatform(false);
         }
 
@@ -2501,7 +2524,7 @@ const app = createApp({
             // 共享方法
             fetchJSON, refreshState, refreshLogs, refreshTask, refreshStreams, refreshMedia, refreshDeviceInfo, refreshConnection,
             saveConnConfig, loadConnConfig, refreshConfig,
-            registerToPlatform, doRegister, doPowerOn, doPowerOff, saveState, clearLogs, downloadLogFile,
+            registerToPlatform, resetLicenseLock, doRegister, doPowerOn, doPowerOff, saveState, clearLogs, downloadLogFile,
             loadLiveCapability, refreshLiveCapability, openLiveConfigDialog, saveLiveConfig, installFfmpeg,
             saveLocation, loadLocation, saveRcLostAction, triggerRcLost,
             saveAmapKey, clearAmapKey, onMapModeChange, initAmap, createMap, setAirportLocation,
@@ -2518,7 +2541,7 @@ const app = createApp({
 
         // 外壳模板（标题栏/日志区/公共弹窗）需要的共享项；Dock 专属项已迁移到 dock-panel.js
         return { mqttConnected, online, powered, mqttError, state, editState, task, streams, media, logs,
-                 connConfig, connecting, deviceInfo, showRegisterDialog, licenseLocked, showDeviceInfoDialog,
+                 connConfig, connecting, deviceInfo, showRegisterDialog, licenseLocked, resetLicenseLock, showDeviceInfoDialog,
                  gatewayName, droneName, droneStatus, droneTagType,
                  logFilter, autoScroll, logContainer, topicFilter, topicOptions, searchKeyword,
                  filteredLogs, historyLogs, loadingHistory, hasMoreHistory,
