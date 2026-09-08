@@ -43,6 +43,9 @@ import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticCode;
 import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticLogRecorder;
 import ltd.cdmi.hivemind.simulator.mqtt.DockTopicSchema;
 import ltd.cdmi.hivemind.simulator.mqtt.MqttClientManager;
+import ltd.cdmi.hivemind.simulator.wayline.WaylineFlightEngine;
+import ltd.cdmi.hivemind.simulator.wayline.WaylinePlan;
+import ltd.cdmi.hivemind.simulator.wayline.WaylineRouteLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -174,6 +177,9 @@ public class WaylineTaskSimulator {
 
     private final ScheduledExecutorService scheduler;
     private final AtomicReference<ScheduledFuture<?>> progressTask = new AtomicReference<>();
+    private final AtomicReference<ScheduledFuture<?>> routeTask = new AtomicReference<>();
+    private final WaylineRouteLoader routeLoader;
+    private final WaylineFlightEngine routeEngine;
 
     /** 位置插值任务（TC-WAYLINE-024~026）：向 targetPosition 匀速推进 */
     private final AtomicReference<ScheduledFuture<?>> interpTask = new AtomicReference<>();
@@ -207,6 +213,10 @@ public class WaylineTaskSimulator {
         this.runtimeConfig = runtimeConfig;
         this.diagnosticRecorder = diagnosticRecorder;
         this.dockTopicSchema = dockTopicSchema;
+        this.routeLoader = new WaylineRouteLoader();
+        this.routeEngine = new WaylineFlightEngine(state,
+                runtimeConfig.getLocationLatitude(), runtimeConfig.getLocationLongitude(),
+                runtimeConfig.getLocationHeight());
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "wayline-scheduler");
             t.setDaemon(true);
@@ -223,6 +233,7 @@ public class WaylineTaskSimulator {
 
     @PreDestroy
     public void destroy() {
+        stopRouteTask();
         scheduler.shutdownNow();
     }
 
@@ -377,6 +388,8 @@ public class WaylineTaskSimulator {
      * flighttask_prepare：任务准备。回复 result=0，更新 dock 状态。
      */
     private Map<String, Object> handlePrepare(JsonNode data) {
+        stopRouteTask();
+        routeEngine.clear();
         if (data != null) {
             var req = MessageCodec.fromJson(data.toString(), FlighttaskPrepareRequest.class);
             currentFlightId = req.flightId();
@@ -387,6 +400,23 @@ public class WaylineTaskSimulator {
             // DJI 文档约束：rth_altitude int, min=20, max=1500, 单位 m（相对起飞点 ALT）
             if (req.rthAltitude() != null) {
                 state.setRthAltitude(req.rthAltitude());
+            }
+            var file = req.file();
+            if (file != null && file.url() != null && !file.url().isBlank()) {
+                try {
+                    WaylinePlan plan = routeLoader.load(file.url(),
+                            runtimeConfig.getLocationLatitude(),
+                            runtimeConfig.getLocationLongitude(),
+                            runtimeConfig.getLocationHeight());
+                    routeEngine.prepare(plan);
+                    log.info("KMZ route prepared: source={}, waypoints={}, distance={}m, duration={}s",
+                            plan.source(), plan.waypoints().size(),
+                            Math.round(plan.totalDistance()), Math.round(plan.totalDuration()));
+                } catch (Exception e) {
+                    routeEngine.clear();
+                    log.warn("KMZ route load failed; using compatibility flight path: url={}, reason={}",
+                            file.url(), e.getMessage());
+                }
             }
         }
 
@@ -498,6 +528,14 @@ public class WaylineTaskSimulator {
         state.setDroneModeCode(4); // 自动起飞
         state.setPutterExpanded(true);
 
+        if (routeEngine.hasPlan()) {
+            stopInterpolation();
+            routeEngine.start(currentTrackId);
+            state.setDroneModeCode(5);
+            currentStepIndex = 2;
+            startRouteTask();
+        }
+
         // 启动进度推进任务
         startProgressTask();
         log.info("任务执行已启动: flightId={}, trackId={}", currentFlightId, currentTrackId);
@@ -547,6 +585,7 @@ public class WaylineTaskSimulator {
      */
     private Map<String, Object> handlePause() {
         paused = true;
+        routeEngine.pause();
         state.setDroneModeCode(5); // 航线飞行→暂停（保持悬停）
         log.info("任务已暂停: flightId={}", currentFlightId);
         return Map.of("result", 0);
@@ -557,6 +596,7 @@ public class WaylineTaskSimulator {
      */
     private Map<String, Object> handleRecovery() {
         paused = false;
+        routeEngine.resume();
         state.setDroneModeCode(5); // 航线飞行
         log.info("任务已恢复: flightId={}", currentFlightId);
         return Map.of("result", 0);
@@ -624,6 +664,8 @@ public class WaylineTaskSimulator {
     private Map<String, Object> handleReturnHome() {
         // 停止当前航线任务进度（若在执行中）
         stopProgressTask();
+        stopRouteTask();
+        routeEngine.stop();
 
         // 设置返航模式
         state.setDroneModeCode(9); // 自动返航
@@ -791,6 +833,29 @@ public class WaylineTaskSimulator {
         progressTask.set(task);
     }
 
+    private void startRouteTask() {
+        stopRouteTask();
+        ScheduledFuture<?> task = scheduler.scheduleAtFixedRate(() -> {
+            try {
+                if (routeEngine.tick()) {
+                    currentStepIndex = STEP_PERCENTS.length - 1;
+                    publishProgress("ok", currentStepIndex, 100);
+                    completeTask();
+                }
+            } catch (Exception e) {
+                log.error("Wayline route update failed: {}", e.getMessage(), e);
+            }
+        }, 0, INTERP_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
+        routeTask.set(task);
+    }
+
+    private void stopRouteTask() {
+        ScheduledFuture<?> task = routeTask.getAndSet(null);
+        if (task != null) {
+            task.cancel(false);
+        }
+    }
+
     private void stopProgressTask() {
         ScheduledFuture<?> task = progressTask.getAndSet(null);
         if (task != null) {
@@ -806,6 +871,13 @@ public class WaylineTaskSimulator {
             return;
         }
         try {
+            if (routeEngine.status() == WaylineFlightEngine.Status.RUNNING) {
+                currentStepIndex = 2;
+                int percent = Math.max(20, Math.min(95,
+                        (int) Math.round(20 + routeEngine.progress() * 75)));
+                publishProgress("in_progress", currentStepIndex, percent);
+                return;
+            }
             int[] seq = stepSequence();
             if (currentStepIndex >= seq.length) {
                 // 任务完成
@@ -839,6 +911,8 @@ public class WaylineTaskSimulator {
      */
     private void completeTask() {
         stopProgressTask();
+        stopRouteTask();
+        routeEngine.stop();
         stopInterpolation();  // TC-WAYLINE-026：任务完成停止插值
 
         // 无人机降落归舱，恢复 dock 待机状态（复用归舱逻辑，避免重复代码）
@@ -984,6 +1058,8 @@ public class WaylineTaskSimulator {
      */
     private void resetDroneToHomeState() {
         stopInterpolation();  // TC-WAYLINE-026：归舱（完成/取消共用入口）必须停止插值，否则位置被插值覆盖
+        stopRouteTask();
+        routeEngine.stop();
         state.setDroneModeCode(0); // 待机
         state.setDroneInDock(true);
         state.setDroneChargeState(1); // 充电中
@@ -994,6 +1070,12 @@ public class WaylineTaskSimulator {
         state.setDroneLatitude(runtimeConfig.getLocationLatitude());
         state.setDroneLongitude(runtimeConfig.getLocationLongitude());
         state.setDroneHeight(0.0);
+        state.setHorizontalSpeed(0.0);
+        state.setVerticalSpeed(0.0);
+        state.setHomeDistance(0.0);
+        state.setRemainingFlightTimeSeconds(-1);
+        state.setRouteTelemetryActive(false);
+        state.setCurrentTrackId("");
         // 无人机归舱后海拔=机场海拔（在地面），与失联返航/关机归舱逻辑保持一致
         state.setDroneElevation(runtimeConfig.getLocationHeight());
     }
@@ -1002,6 +1084,7 @@ public class WaylineTaskSimulator {
      * 重置任务状态。
      */
     private void resetTaskState() {
+        routeEngine.clear();
         currentFlightId = null;
         currentTrackId = null;
         currentTaskBid = null;
@@ -1051,7 +1134,8 @@ public class WaylineTaskSimulator {
         int currentStep = seq[Math.min(stepIndex, seq.length - 1)];
 
         Map<String, Object> ext = new LinkedHashMap<>();
-        ext.put("current_waypoint_index", stepIndex * 2);
+        ext.put("current_waypoint_index", routeEngine.hasPlan()
+                ? routeEngine.waypointIndex() : stepIndex * 2);
         ext.put("flight_id", currentFlightId != null ? currentFlightId : "");
         ext.put("media_count", stepIndex);
         ext.put("track_id", currentTrackId != null ? currentTrackId : "");
@@ -1071,7 +1155,7 @@ public class WaylineTaskSimulator {
             breakPoint.put("latitude", state.getDroneLatitude());
             breakPoint.put("longitude", state.getDroneLongitude());
             breakPoint.put("height", state.getDroneElevation());
-            breakPoint.put("attitude_head", 0.0);
+            breakPoint.put("attitude_head", state.getAttitudeYaw());
             ext.put("break_point", breakPoint);
         }
 

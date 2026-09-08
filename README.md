@@ -367,7 +367,7 @@ hivemind-simulator/
 
 以下为暂未支持、计划演进的方向，欢迎在 Issue 中讨论或认领（标注 `good first issue` 的适合首次贡献）：
 
-- [ ] 真实 KMZ 航线解析（当前按时间假推进进度）
+- [x] 真实 KMZ/WPML 航线解析与实时飞行 OSD（支持 HTTP(S)、file URL 和本地路径）
 - [ ] 多机模拟（当前为单机）
 
 > 当前与历史变更见 [CHANGELOG.md](CHANGELOG.md)。

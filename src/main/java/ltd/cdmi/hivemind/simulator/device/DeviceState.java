@@ -213,7 +213,7 @@ public class DeviceState {
     /** 当前 takeoff_to_point 任务 ID（flight_id） */
     private volatile String currentFlightId;
     /** 当前航迹 ID（track_id，takeoff_to_point 专用） */
-    private volatile String currentTrackId;
+    private volatile String currentTrackId = "";
     /** 目标点纬度 */
     private volatile double targetLatitude;
     /** 目标点经度 */
@@ -247,6 +247,14 @@ public class DeviceState {
 
     /** 飞行累计时长 (秒) */
     private volatile long flightTimeSeconds = 0;
+    /** Distance from the configured dock home point, in meters. */
+    private volatile double homeDistance = 0.0;
+    /** Distance traveled by the current simulated route, in meters. */
+    private volatile double totalFlightDistance = 0.0;
+    /** Estimated seconds remaining on the active route. */
+    private volatile long remainingFlightTimeSeconds = -1;
+    /** Whether route-derived telemetry should override normal OSD estimates. */
+    private volatile boolean routeTelemetryActive = false;
     /** 上次状态更新时间 */
     private volatile LocalDateTime lastUpdate = LocalDateTime.now();
 }
