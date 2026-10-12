@@ -11,3 +11,6 @@ target/
 .trae-html-share-packages/
 .tools/
 *.pid
+# 验收用可见光样例照片（约 486MB），只保留来源说明
+media/acceptance-photos/*
+!media/acceptance-photos/SOURCE.md

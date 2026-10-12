@@ -23,6 +23,8 @@ import ltd.cdmi.hivemind.simulator.config.RuntimeConfig;
 import ltd.cdmi.hivemind.simulator.config.SimulatorProperties;
 import ltd.cdmi.dji.cloudapi.sdk.model.DockModel;
 import ltd.cdmi.dji.cloudapi.sdk.model.RcModel;
+import ltd.cdmi.hivemind.simulator.device.DeviceState;
+import ltd.cdmi.hivemind.simulator.device.StatePushService;
 import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticLogRecorder;
 import ltd.cdmi.hivemind.simulator.handler.DrcCommandHandler;
 import ltd.cdmi.hivemind.simulator.media.FfmpegWhipPusher;
@@ -30,6 +32,7 @@ import ltd.cdmi.hivemind.simulator.handler.LiveStreamSimulator;
 import ltd.cdmi.hivemind.simulator.handler.ServiceCommandHandler;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
 import java.util.List;
@@ -73,9 +76,12 @@ class LiveStreamSimulatorTest {
         return new MqttProperties("127.0.0.1", 1883, "user", "pass", "sim-", "mon-");
     }
 
+    private StatePushService statePush;
+
     private LiveStreamSimulator createSimulator(DockModel dockType) {
         RuntimeConfig runtimeConfig = new RuntimeConfig(testMqttProps(), testProps(), new LiveConfigStore());
         runtimeConfig.setDockType(dockType);
+        statePush = Mockito.mock(StatePushService.class);
         ServiceCommandHandler commandHandler = Mockito.mock(ServiceCommandHandler.class);
         DiagnosticLogRecorder diagnosticRecorder = new DiagnosticLogRecorder();
         // 用 mock pusher stub RTMP 可用+startPush 成功，避免依赖测试环境 ffmpeg 是否安装
@@ -83,13 +89,17 @@ class LiveStreamSimulatorTest {
         Mockito.when(ffmpegPusher.isPushAvailable(FfmpegWhipPusher.URL_TYPE_RTMP)).thenReturn(true);
         Mockito.when(ffmpegPusher.startPush(Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
                 Mockito.eq(FfmpegWhipPusher.URL_TYPE_RTMP))).thenReturn(true);
-        return new LiveStreamSimulator(commandHandler, Mockito.mock(DrcCommandHandler.class), runtimeConfig, ffmpegPusher, diagnosticRecorder);
+        DeviceState state = new DeviceState();
+        state.setDroneActivated(true);
+        return new LiveStreamSimulator(commandHandler, Mockito.mock(DrcCommandHandler.class), runtimeConfig, ffmpegPusher, diagnosticRecorder,
+                state, statePush);
     }
 
     private LiveStreamSimulator createPilotSimulator(RcModel controllerType) {
         RuntimeConfig runtimeConfig = new RuntimeConfig(testMqttProps(), testProps(), new LiveConfigStore());
         runtimeConfig.setDeviceMode(ltd.cdmi.hivemind.simulator.device.DeviceMode.PILOT);
         runtimeConfig.setControllerType(controllerType);
+        statePush = Mockito.mock(StatePushService.class);
         ServiceCommandHandler commandHandler = Mockito.mock(ServiceCommandHandler.class);
         DiagnosticLogRecorder diagnosticRecorder = new DiagnosticLogRecorder();
         // 用 mock pusher stub RTMP 可用+startPush 成功，避免依赖测试环境 ffmpeg 是否安装
@@ -97,7 +107,8 @@ class LiveStreamSimulatorTest {
         Mockito.when(ffmpegPusher.isPushAvailable(FfmpegWhipPusher.URL_TYPE_RTMP)).thenReturn(true);
         Mockito.when(ffmpegPusher.startPush(Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
                 Mockito.eq(FfmpegWhipPusher.URL_TYPE_RTMP))).thenReturn(true);
-        return new LiveStreamSimulator(commandHandler, Mockito.mock(DrcCommandHandler.class), runtimeConfig, ffmpegPusher, diagnosticRecorder);
+        return new LiveStreamSimulator(commandHandler, Mockito.mock(DrcCommandHandler.class), runtimeConfig, ffmpegPusher, diagnosticRecorder,
+                new DeviceState(), statePush);
     }
 
     private JsonNode json(String json) throws Exception {
@@ -267,6 +278,15 @@ class LiveStreamSimulatorTest {
 
         assertEquals(0, result.get("result"));
         assertEquals("zoom", simulator.getVideoType(), "videoType 应更新为 zoom");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> changes = ArgumentCaptor.forClass(Map.class);
+        Mockito.verify(statePush).publishGatewayState(changes.capture());
+        assertTrue(changes.getValue().containsKey("live_capacity"),
+                "镜头切换是 pushMode=1 变化，应通过 state topic 上报 live_capacity");
+        assertTrue(changes.getValue().containsKey("live_status"), "同时上报当前 live_status");
+        String videoType = String.valueOf(changes.getValue().get("live_capacity"));
+        assertTrue(videoType.contains("zoom"), "live_capacity 应反映切换后的镜头 zoom");
     }
 
     // ==================== TC-LIVE-009：三 Dock 均支持 live_lens_change ====================
@@ -402,7 +422,8 @@ class LiveStreamSimulatorTest {
 
         DiagnosticLogRecorder diagnosticRecorder = new DiagnosticLogRecorder();
         LiveStreamSimulator simulator = new LiveStreamSimulator(
-                Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class), runtimeConfig, mockPusher, diagnosticRecorder);
+                Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class), runtimeConfig, mockPusher, diagnosticRecorder,
+                new ltd.cdmi.hivemind.simulator.device.DeviceState(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         String whipUrl = "http://172.30.48.1:3001/stream/index/api/webrtc?app=live&stream=test_stream&type=push";
         Map<String, Object> result = simulator.handle("live_start_push", json(
@@ -436,7 +457,8 @@ class LiveStreamSimulatorTest {
 
         DiagnosticLogRecorder diagnosticRecorder = new DiagnosticLogRecorder();
         LiveStreamSimulator simulator = new LiveStreamSimulator(
-                Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class), runtimeConfig, mockPusher, diagnosticRecorder);
+                Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class), runtimeConfig, mockPusher, diagnosticRecorder,
+                new ltd.cdmi.hivemind.simulator.device.DeviceState(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         String whipUrl = "http://172.30.48.1:3001/stream/index/api/webrtc?app=live&stream=test_stream&type=push";
         Map<String, Object> result = simulator.handle("live_start_push", json(
@@ -466,7 +488,8 @@ class LiveStreamSimulatorTest {
 
         DiagnosticLogRecorder diagnosticRecorder = new DiagnosticLogRecorder();
         LiveStreamSimulator simulator = new LiveStreamSimulator(
-                Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class), runtimeConfig, mockPusher, diagnosticRecorder);
+                Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class), runtimeConfig, mockPusher, diagnosticRecorder,
+                new ltd.cdmi.hivemind.simulator.device.DeviceState(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         // 缺少 stream 参数的 WebRTC URL
         String malformedUrl = "http://172.30.48.1:3001/stream/index/api/webrtc?app=live&type=push";
@@ -497,7 +520,8 @@ class LiveStreamSimulatorTest {
 
         DiagnosticLogRecorder diagnosticRecorder = new DiagnosticLogRecorder();
         LiveStreamSimulator simulator = new LiveStreamSimulator(
-                Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class), runtimeConfig, mockPusher, diagnosticRecorder);
+                Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class), runtimeConfig, mockPusher, diagnosticRecorder,
+                new ltd.cdmi.hivemind.simulator.device.DeviceState(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         // url_type=3 (GB28181) + url=rtmp://...（平台配置不匹配）
         String rtmpUrl = "rtmp://192.168.169.154:1935/live/7UUXN1Q00A008W_dock_outdoor";
@@ -556,7 +580,8 @@ class LiveStreamSimulatorTest {
         FfmpegWhipPusher mockPusher = Mockito.mock(FfmpegWhipPusher.class);
         LiveStreamSimulator simulator = new LiveStreamSimulator(
                 Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class),
-                runtimeConfig, mockPusher, new DiagnosticLogRecorder());
+                runtimeConfig, mockPusher, new DiagnosticLogRecorder(),
+                new ltd.cdmi.hivemind.simulator.device.DeviceState(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         simulator.handle("live_start_push", json(
                 "{\"url\":\"rtmp://192.168.1.1:8080/live\",\"url_type\":1,"
@@ -586,7 +611,8 @@ class LiveStreamSimulatorTest {
         DiagnosticLogRecorder diagnosticRecorder = new DiagnosticLogRecorder();
         LiveStreamSimulator simulator = new LiveStreamSimulator(
                 Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class),
-                runtimeConfig, mockPusher, diagnosticRecorder);
+                runtimeConfig, mockPusher, diagnosticRecorder,
+                new ltd.cdmi.hivemind.simulator.device.DeviceState(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         // url_type=3 (GB28181) + URL 非 rtmp:// → 仅协议模拟
         Map<String, Object> result = simulator.handle("live_start_push", json(
@@ -617,7 +643,8 @@ class LiveStreamSimulatorTest {
         DiagnosticLogRecorder diagnosticRecorder = new DiagnosticLogRecorder();
         LiveStreamSimulator simulator = new LiveStreamSimulator(
                 Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class),
-                runtimeConfig, mockPusher, diagnosticRecorder);
+                runtimeConfig, mockPusher, diagnosticRecorder,
+                new ltd.cdmi.hivemind.simulator.device.DeviceState(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         Map<String, Object> result = simulator.handle("live_start_push", json(
                 "{\"url\":\"rtmp://192.168.1.1:8080/live\",\"url_type\":1,"
@@ -635,7 +662,8 @@ class LiveStreamSimulatorTest {
         runtimeConfig.setDockType(DockModel.DOCK3);
         return new LiveStreamSimulator(
                 Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class),
-                runtimeConfig, mockPusher, new DiagnosticLogRecorder());
+                runtimeConfig, mockPusher, new DiagnosticLogRecorder(),
+                new ltd.cdmi.hivemind.simulator.device.DeviceState(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
     }
 
     /**

@@ -22,7 +22,9 @@ import ltd.cdmi.hivemind.simulator.device.DeviceState;
 import ltd.cdmi.dji.cloudapi.sdk.model.DockModel;
 import ltd.cdmi.dji.cloudapi.sdk.model.DroneModel;
 import ltd.cdmi.dji.cloudapi.sdk.model.RcModel;
+import ltd.cdmi.dji.cloudapi.sdk.telemetry.StateField;
 import ltd.cdmi.hivemind.simulator.device.DockOnlineService;
+import ltd.cdmi.hivemind.simulator.device.StatePushService;
 import ltd.cdmi.dji.cloudapi.sdk.model.PayloadType;
 import ltd.cdmi.hivemind.simulator.device.PilotOnlineService;
 import ltd.cdmi.hivemind.simulator.diagnostic.CoverageRecorder;
@@ -128,6 +130,7 @@ public class SimulatorController {
     private final PilotHttpSimulator pilotHttpSimulator;
     private final MopClient mopClient;
     private final DrcConnectionManager drcConnections;
+    private final StatePushService statePushService;
 
     /** 应用版本号：从 Jar MANIFEST 读取（Spring Boot Maven Plugin 自动写入 Implementation-Version），
      * IDE 开发模式下为 null，回退为 "dev"。 */
@@ -156,7 +159,8 @@ public class SimulatorController {
                                SituationAwarenessSimulator situationAwarenessSimulator,
                                PilotHttpSimulator pilotHttpSimulator,
                                MopClient mopClient,
-                               DrcConnectionManager drcConnections) {
+                               DrcConnectionManager drcConnections,
+                               StatePushService statePushService) {
         this.onlineService = onlineService;
         this.pilotOnlineService = pilotOnlineService;
         this.state = state;
@@ -187,6 +191,7 @@ public class SimulatorController {
         this.pilotHttpSimulator = pilotHttpSimulator;
         this.mopClient = mopClient;
         this.drcConnections = drcConnections;
+        this.statePushService = statePushService;
         // 读取 Jar 版本号：IDE 开发模式下 Implementation-Version 为 null，回退为 "dev"
         String implVer = getClass().getPackage().getImplementationVersion();
         this.appVersion = (implVer != null && !implVer.isBlank()) ? implVer : "dev";
@@ -292,6 +297,8 @@ public class SimulatorController {
     /** 修改设备状态参数 */
     @PutMapping("/state")
     public Map<String, Object> updateState(@RequestBody Map<String, Object> updates) {
+        // pushMode=1 字段单独收集，值变化后走 state topic 增量上报；其余字段是 pushMode=0，由下次 OSD 带出
+        Map<String, Object> stateChanges = new LinkedHashMap<>();
         if (updates.containsKey("batteryPercent")) state.setBatteryPercent(((Number) updates.get("batteryPercent")).intValue());
         if (updates.containsKey("dockTemperature")) state.setDockTemperature(((Number) updates.get("dockTemperature")).doubleValue());
         if (updates.containsKey("dockHumidity")) state.setDockHumidity(((Number) updates.get("dockHumidity")).doubleValue());
@@ -315,14 +322,25 @@ public class SimulatorController {
                         // 飞行器从激活→休眠：发送 update_topo 通知平台飞行器下线
                         onlineService.publishDroneSleepTopo();
                     }
+                    if (oldValue != newValue) {
+                        // 飞行器进出拓扑会改变网关 live_capacity，按 pushMode=1 再报一次
+                        liveSimulator.publishLiveStateChange();
+                    }
                 }
             }
         }
         if (updates.containsKey("droneChargeState")) state.setDroneChargeState(((Number) updates.get("droneChargeState")).intValue());
         if (updates.containsKey("backupBatteryTemperature")) state.setBackupBatteryTemperature(((Number) updates.get("backupBatteryTemperature")).doubleValue());
-        if (updates.containsKey("silentMode")) state.setSilentMode(((Number) updates.get("silentMode")).intValue());
+        if (updates.containsKey("silentMode")) {
+            int val = ((Number) updates.get("silentMode")).intValue();
+            if (state.getSilentMode() != val) {
+                state.setSilentMode(val);
+                stateChanges.put(StateField.SILENT_MODE.fieldName(), val);
+            }
+        }
         // Pilot 模式遥控器电量（capacity_percent），Dock 模式忽略此字段
         if (updates.containsKey("controllerCapacity")) state.setControllerCapacity(((Number) updates.get("controllerCapacity")).intValue());
+        statePushService.publishGatewayState(stateChanges);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("success", true);
         result.put("state", state);
@@ -570,6 +588,15 @@ public class SimulatorController {
     @GetMapping("/live/push-records")
     public List<Map<String, Object>> getPushRecords() {
         return liveSimulator.getPushRecords();
+    }
+
+    @PostMapping("/live/state/publish")
+    public Map<String, Object> publishLiveState() {
+        onlineService.publishDockState();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("success", true);
+        result.put("topic", "thing/product/" + runtimeConfig.getDockSn() + "/state");
+        return result;
     }
 
     /**

@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+### 新增
+- **pushMode=1 状态变化上报**：`thing/product/{gateway_sn}/state` 不再只在上线时推一次全量。`property/set` 改到 `silent_mode` / `air_transfer_enable` / `user_experience_improvement`、控制台改静音模式、直播开停推流、镜头切换、舱内/舱外切换、飞行器激活/休眠时，只推变化字段（不定频）。值未变化不发。设备未上线时跳过，下次上线全量仍带当前值。`live_capacity` 改为按当前推流构造：Dock 含机场相机 `165-0-7`（舱位）+ 飞行器主相机（镜头类型），飞行器休眠时从 `device_list` 移除
+
 ## [v1.4.9] - 2026-09-04
 
 ### 新增

@@ -19,9 +19,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ltd.cdmi.dji.cloudapi.sdk.codec.DjiMessage;
 import ltd.cdmi.dji.cloudapi.sdk.command.property.PropertySetRequest;
+import ltd.cdmi.dji.cloudapi.sdk.telemetry.StateField;
 import ltd.cdmi.hivemind.simulator.config.RuntimeConfig;
 import ltd.cdmi.hivemind.simulator.config.SimulatorProperties;
 import ltd.cdmi.hivemind.simulator.device.DeviceState;
+import ltd.cdmi.hivemind.simulator.device.StatePushService;
 import ltd.cdmi.dji.cloudapi.sdk.model.DockModel;
 import ltd.cdmi.hivemind.simulator.diagnostic.CoverageRecorder;
 import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticCode;
@@ -54,13 +56,15 @@ public class PropertySetHandler {
     private final CoverageRecorder coverageRecorder;
     private final RuntimeConfig runtimeConfig;
     private final DockTopicSchema dockTopicSchema;
+    private final StatePushService statePushService;
 
     public PropertySetHandler(SimulatorProperties props, MqttClientManager mqtt,
                               DeviceState state, ObjectMapper objectMapper,
                               DiagnosticLogRecorder diagnosticRecorder,
                               CoverageRecorder coverageRecorder,
                               RuntimeConfig runtimeConfig,
-                              DockTopicSchema dockTopicSchema) {
+                              DockTopicSchema dockTopicSchema,
+                              StatePushService statePushService) {
         this.props = props;
         this.mqtt = mqtt;
         this.state = state;
@@ -69,6 +73,7 @@ public class PropertySetHandler {
         this.coverageRecorder = coverageRecorder;
         this.runtimeConfig = runtimeConfig;
         this.dockTopicSchema = dockTopicSchema;
+        this.statePushService = statePushService;
     }
 
     @PostConstruct
@@ -109,10 +114,15 @@ public class PropertySetHandler {
             PropertySetRequest req = DjiMessage.parse(payload, PropertySetRequest.class).data();
             Map<String, Object> properties = req != null ? req.properties() : Map.of();
 
-            // accessMode=rw 的属性：更新本地状态，下次 state topic 反映新值
+            // accessMode=rw 且 pushMode=1 的属性：更新本地状态，并立即用 state topic 上报变化字段。
+            // 值没有变化时不报，避免平台重复下发同一值刷出空变化。
+            Map<String, Object> stateChanges = new LinkedHashMap<>();
             if (properties.containsKey("silent_mode")) {
                 int val = ((Number) properties.get("silent_mode")).intValue();
-                state.setSilentMode(val);
+                if (state.getSilentMode() != val) {
+                    state.setSilentMode(val);
+                    stateChanges.put(StateField.SILENT_MODE.fieldName(), val);
+                }
                 log.info("属性设置 silent_mode={}", val);
             }
             if (properties.containsKey("air_transfer_enable")) {
@@ -120,7 +130,10 @@ public class PropertySetHandler {
                 // Dock1 收到此 set 仍回复 result=0 但不更新状态
                 if (runtimeConfig.getDockType() != DockModel.DOCK1) {
                     boolean val = (Boolean) properties.get("air_transfer_enable");
-                    state.setAirTransferEnable(val);
+                    if (state.isAirTransferEnable() != val) {
+                        state.setAirTransferEnable(val);
+                        stateChanges.put(StateField.AIR_TRANSFER_ENABLE.fieldName(), val);
+                    }
                     log.info("属性设置 air_transfer_enable={}", val);
                 } else {
                     log.warn("Dock1 不支持 air_transfer_enable，忽略状态更新");
@@ -128,10 +141,14 @@ public class PropertySetHandler {
             }
             if (properties.containsKey("user_experience_improvement")) {
                 int val = ((Number) properties.get("user_experience_improvement")).intValue();
-                state.setUserExperienceImprovement(val);
+                if (state.getUserExperienceImprovement() != val) {
+                    state.setUserExperienceImprovement(val);
+                    stateChanges.put(StateField.USER_EXPERIENCE_IMPROVEMENT.fieldName(), val);
+                }
                 log.info("属性设置 user_experience_improvement={}", val);
             }
             // accessMode=r 的属性（如 air_conditioner_state）：仅回复，不更新本地状态
+            statePushService.publishGatewayState(stateChanges);
 
             // 回 property/set_reply：每个被设置的叶子字段用 {"result": 0} 替换原值（DJI Cloud API 协议）
             // 对齐 DJI 文档示例：set {"distance_limit_status": {"state": 1}}

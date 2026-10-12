@@ -35,3 +35,5 @@ target/jacoco.exec
 *.tmp
 media/
 videos/
+# 验收照片体积大，不打进镜像
+media/acceptance-photos/

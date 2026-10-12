@@ -25,6 +25,7 @@ import ltd.cdmi.hivemind.simulator.device.DeviceState;
 import ltd.cdmi.dji.cloudapi.sdk.model.DockModel;
 import ltd.cdmi.hivemind.simulator.diagnostic.CoverageRecorder;
 import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticLogRecorder;
+import ltd.cdmi.hivemind.simulator.device.StatePushService;
 import ltd.cdmi.hivemind.simulator.handler.PropertySetHandler;
 import ltd.cdmi.hivemind.simulator.mqtt.DockTopicSchema;
 import ltd.cdmi.hivemind.simulator.mqtt.MqttClientManager;
@@ -70,6 +71,9 @@ class PropertySetHandlerTest {
         return firePropertySet(setDataJson, state, DockModel.DOCK3);
     }
 
+    /** 最近一次 property/set 触发的 state 变化上报（pushMode=1 增量） */
+    private StatePushService lastStatePush;
+
     /** 构造指定 Dock 版本的 PropertySetHandler 并触发一次 property/set 回调 */
     private JsonNode firePropertySet(String setDataJson, DeviceState state, DockModel dockType) throws Exception {
         ObjectMapper objectMapper = new ObjectMapper();
@@ -78,9 +82,11 @@ class PropertySetHandlerTest {
         CoverageRecorder cov = Mockito.mock(CoverageRecorder.class);
         RuntimeConfig rc = testRuntimeConfig();
         rc.setDockType(dockType);
+        lastStatePush = Mockito.mock(StatePushService.class);
 
         PropertySetHandler handler = new PropertySetHandler(
-                testProps(), mqtt, state, objectMapper, diag, cov, rc, new DockTopicSchema());
+                testProps(), mqtt, state, objectMapper, diag, cov, rc, new DockTopicSchema(),
+                lastStatePush);
         handler.init();
 
         // 捕获 addListener 注册的回调
@@ -171,6 +177,25 @@ class PropertySetHandlerTest {
         assertEquals(0, state.getSilentMode(), "默认应为 0（非静音）");
         firePropertySet("{\"silent_mode\": 1}", state);
         assertEquals(1, state.getSilentMode(), "property/set 后应更新为 1（静音模式）");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> changes = ArgumentCaptor.forClass(Map.class);
+        Mockito.verify(lastStatePush).publishGatewayState(changes.capture());
+        assertEquals(1, changes.getValue().get("silent_mode"),
+                "pushMode=1 属性变化应通过 state topic 上报变化字段");
+        assertEquals(1, changes.getValue().size(), "state 变化上报只带变化字段，不重发全量");
+    }
+
+    @DisplayName("TC-PROP-009：pushMode=1 属性值未变化时不发 state")
+    @Test
+    void unchangedPropertyDoesNotPublishState() throws Exception {
+        DeviceState state = new DeviceState();
+        firePropertySet("{\"silent_mode\": 0}", state);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> changes = ArgumentCaptor.forClass(Map.class);
+        Mockito.verify(lastStatePush).publishGatewayState(changes.capture());
+        assertTrue(changes.getValue().isEmpty(), "值未变化不应产生 state 变化字段");
     }
 
     @DisplayName("TC-PROP-007：Dock1 不支持 air_transfer_enable 收到 set 不更新状态")

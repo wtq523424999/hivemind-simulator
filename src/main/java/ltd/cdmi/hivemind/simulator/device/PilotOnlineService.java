@@ -72,6 +72,7 @@ public class PilotOnlineService {
     private final TopicSchema topicSchema;
     private final MapElementSimulator mapElementSimulator;
     private final SituationAwarenessSimulator situationAwarenessSimulator;
+    private final StatePushService statePushService;
 
     /** tid → CompletableFuture，用于等待 status_reply */
     private final ConcurrentHashMap<String, CompletableFuture<JsonNode>> pendingReplies = new ConcurrentHashMap<>();
@@ -84,7 +85,8 @@ public class PilotOnlineService {
                               DiagnosticLogRecorder diagnosticRecorder,
                               List<DroneStateBuilder> stateBuilders,
                               MapElementSimulator mapElementSimulator,
-                              SituationAwarenessSimulator situationAwarenessSimulator) {
+                              SituationAwarenessSimulator situationAwarenessSimulator,
+                              StatePushService statePushService) {
         this.mqtt = mqtt;
         this.state = state;
         this.objectMapper = objectMapper;
@@ -94,6 +96,7 @@ public class PilotOnlineService {
         this.topicSchema = new PilotTopicSchema(runtimeConfig.getControllerType());
         this.mapElementSimulator = mapElementSimulator;
         this.situationAwarenessSimulator = situationAwarenessSimulator;
+        this.statePushService = statePushService;
         ensureReplyListeners();
     }
 
@@ -337,38 +340,10 @@ public class PilotOnlineService {
      * </ul>
      */
     private void publishLiveCapacity() {
-        // 相机索引随机型解析（TC-LIVE-026/TC-PAYLOAD-026）：与 drone OSD payloads 的 payload_index 同源，
-        // 硬编码 165-0-7（机场相机）会导致平台拼 video_id 与实际推流相机不符
-        String cameraIndex = DefaultCameraResolver.requireDefaultCameraIndex(runtimeConfig.getDroneType(), "Pilot live_capacity");
-
-        // 视频流信息（video_list 元素）
-        Map<String, Object> video = new LinkedHashMap<>();
-        video.put("video_index", "normal-0");
-        video.put("video_type", "normal");
-        video.put("switchable_video_types", List.of("normal"));
-
-        // 相机信息（camera_list 元素）
-        Map<String, Object> cameraInfo = new LinkedHashMap<>();
-        cameraInfo.put("camera_index", cameraIndex);
-        cameraInfo.put("available_video_number", 1);
-        cameraInfo.put("coexist_video_number_max", 1);
-        cameraInfo.put("video_list", List.of(video));
-
-        // 子设备信息（device_list 元素）
-        Map<String, Object> device = new LinkedHashMap<>();
-        device.put("sn", runtimeConfig.getDroneSn());
-        device.put("available_video_number", 1);
-        device.put("coexist_video_number_max", 1);
-        device.put("camera_list", List.of(cameraInfo));
-
-        // 直播能力
-        Map<String, Object> liveCapacity = new LinkedHashMap<>();
-        liveCapacity.put("available_video_number", 1);
-        liveCapacity.put("coexist_video_number_max", 1);
-        liveCapacity.put("device_list", List.of(device));
-
+        // 相机索引随机型解析（TC-LIVE-026/TC-PAYLOAD-026）：与 drone OSD payloads 的 payload_index 同源。
+        // 上线时尚未推流，镜头用默认 normal；之后 live_lens_change 由 LiveStreamSimulator 增量上报。
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put(StateField.LIVE_CAPACITY.fieldName(), liveCapacity);
+        data.put(StateField.LIVE_CAPACITY.fieldName(), LiveCapacityBuilder.forPilot(runtimeConfig, "normal"));
 
         Map<String, Object> envelope = new LinkedHashMap<>();
         envelope.put("bid", UUID.randomUUID().toString());
@@ -416,6 +391,17 @@ public class PilotOnlineService {
         String topic = topicSchema.topic(topicSchema.state(), runtimeConfig.getControllerSn());
         mqtt.publishJson(topic, envelope);
         log.info("已推送遥控器 state 属性（state topic）");
+    }
+
+    /**
+     * 上报 pushMode=1 属性变化（只带变化字段，不定频）。
+     * <p>上线全量仍走 {@link #publishControllerState()} / {@link #publishLiveCapacity()}；
+     * 直播开停、镜头切换等变化走这里。</p>
+     *
+     * @param data 仅包含本次变化的字段
+     */
+    public void publishStateChange(Map<String, Object> data) {
+        statePushService.publishGatewayState(data);
     }
 
     /**

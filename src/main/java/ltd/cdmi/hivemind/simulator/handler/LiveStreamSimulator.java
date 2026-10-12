@@ -25,8 +25,12 @@ import ltd.cdmi.dji.cloudapi.sdk.command.service.live.LiveStartPushRequest;
 import ltd.cdmi.dji.cloudapi.sdk.command.service.live.LiveStopPushRequest;
 import ltd.cdmi.dji.cloudapi.sdk.protocol.method.DrcMethod;
 import ltd.cdmi.dji.cloudapi.sdk.protocol.method.ServiceMethod;
+import ltd.cdmi.dji.cloudapi.sdk.telemetry.StateField;
 import ltd.cdmi.hivemind.simulator.config.RuntimeConfig;
 import ltd.cdmi.hivemind.simulator.device.DeviceMode;
+import ltd.cdmi.hivemind.simulator.device.DeviceState;
+import ltd.cdmi.hivemind.simulator.device.LiveCapacityBuilder;
+import ltd.cdmi.hivemind.simulator.device.StatePushService;
 import ltd.cdmi.dji.cloudapi.sdk.model.DockModel;
 import ltd.cdmi.dji.cloudapi.sdk.model.RcModel;
 import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticCode;
@@ -95,6 +99,8 @@ public class LiveStreamSimulator {
     private final RuntimeConfig runtimeConfig;
     private final FfmpegWhipPusher ffmpegPusher;
     private final DiagnosticLogRecorder diagnosticRecorder;
+    private final DeviceState state;
+    private final StatePushService statePushService;
 
     /** 当前活跃的推流列表（支持多路同时推流） */
     private final List<LiveStream> activeStreams = new CopyOnWriteArrayList<>();
@@ -106,12 +112,15 @@ public class LiveStreamSimulator {
     public LiveStreamSimulator(ServiceCommandHandler commandHandler,
                                 DrcCommandHandler drcCommandHandler,
                                 RuntimeConfig runtimeConfig, FfmpegWhipPusher ffmpegPusher,
-                                DiagnosticLogRecorder diagnosticRecorder) {
+                                DiagnosticLogRecorder diagnosticRecorder,
+                                DeviceState state, StatePushService statePushService) {
         this.commandHandler = commandHandler;
         this.drcCommandHandler = drcCommandHandler;
         this.runtimeConfig = runtimeConfig;
         this.ffmpegPusher = ffmpegPusher;
         this.diagnosticRecorder = diagnosticRecorder;
+        this.state = state;
+        this.statePushService = statePushService;
     }
 
     @PostConstruct
@@ -209,6 +218,7 @@ public class LiveStreamSimulator {
         addPushRecord(new PushRecord(videoId, url, urlType, attempt.actualUrlType(), attempt.actualUrl(),
                 quality, videoType, STATUS_PUSHING, null, now, null));
         log.info("直播推流已启动: videoId={}, urlType={}, quality={}", videoId, urlType, quality);
+        publishLiveStateChange();
         return Map.of("result", 0);
     }
 
@@ -385,6 +395,7 @@ public class LiveStreamSimulator {
             ffmpegPusher.stopPush(videoId);
             markPushRecordStopped(videoId);
             log.info("直播推流已停止: videoId={}", videoId);
+            publishLiveStateChange();
         }
         return Map.of("result", 0);
     }
@@ -436,6 +447,7 @@ public class LiveStreamSimulator {
                 activeStreams.set(i, new LiveStream(
                         videoId, stream.url(), stream.urlType(), stream.quality(), cameraPosition, stream.videoType()));
                 log.info("直播相机已切换: videoId={}, cameraPosition={}", videoId, cameraPosition);
+                publishLiveStateChange();
                 break;
             }
         }
@@ -472,6 +484,7 @@ public class LiveStreamSimulator {
                     this.videoType = newVideoType;
                     log.info("直播镜头已切换（全局）: videoType={}", newVideoType);
                 }
+                publishLiveStateChange();
                 // TODO: 若需真实推流反映镜头切换，需重启 ffmpeg 进程使用新视频文件
             }
         }
@@ -492,6 +505,7 @@ public class LiveStreamSimulator {
             if (!newVideoType.isEmpty()) {
                 this.videoType = newVideoType;
                 log.info("Pilot 直播镜头已切换: payload_index={}, videoType={}", payloadIndex, newVideoType);
+                publishLiveStateChange();
             }
         }
         return Map.of("result", 0);
@@ -534,6 +548,68 @@ public class LiveStreamSimulator {
     /** 获取全局镜头类型（live_lens_change 设置）。 */
     public String getVideoType() {
         return videoType;
+    }
+
+    /**
+     * 直播能力或直播状态变化后，向网关 state topic 推送 pushMode=1 增量。
+     * <p>只带 {@code live_capacity} 和 {@code live_status}，不定频。设备未上线时由
+     * {@link StatePushService} 跳过，下次上线全量推送会带上当前值。</p>
+     */
+    public void publishLiveStateChange() {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put(StateField.LIVE_CAPACITY.fieldName(), currentLiveCapacity());
+        data.put(StateField.LIVE_STATUS.fieldName(), currentLiveStatus());
+        statePushService.publishGatewayState(data);
+    }
+
+    /**
+     * 按当前推流构造 live_capacity。
+     * <p>飞行器镜头取推流记录里飞行器 video_id 的 video_type，没有则用全局镜头；
+     * 机场舱位取机场相机那一路的 camera_position，Dock1 固定舱内。</p>
+     */
+    private Map<String, Object> currentLiveCapacity() {
+        String droneVideoType = videoType;
+        int cameraPosition = DEFAULT_CAMERA_POSITION;
+        String droneSn = runtimeConfig.getDroneSn();
+        String gatewaySn = runtimeConfig.getGatewaySn();
+        for (LiveStream stream : activeStreams) {
+            String[] parts = stream.videoId().split("/");
+            if (parts.length < 2) {
+                continue;
+            }
+            if (droneSn.equals(parts[0]) && stream.videoType() != null && !stream.videoType().isBlank()) {
+                droneVideoType = stream.videoType();
+            }
+            if (gatewaySn.equals(parts[0]) && LiveCapacityBuilder.DOCK_CAMERA_INDEX.equals(parts[1])) {
+                cameraPosition = stream.cameraPosition();
+            }
+        }
+        cameraPosition = LiveCapacityBuilder.effectiveCameraPosition(runtimeConfig, cameraPosition);
+        if (runtimeConfig.getDeviceMode() == DeviceMode.PILOT) {
+            return LiveCapacityBuilder.forPilot(runtimeConfig, droneVideoType);
+        }
+        return LiveCapacityBuilder.forDock(runtimeConfig, state, droneVideoType, cameraPosition);
+    }
+
+    /**
+     * 构造 live_status：当前在推的视频流。无推流时为空数组。
+     * <p>video_id 格式 {sn}/{camera_index}/{video_index}；status=1 表示在直播。</p>
+     */
+    private List<Map<String, Object>> currentLiveStatus() {
+        List<Map<String, Object>> status = new java.util.ArrayList<>();
+        for (LiveStream stream : activeStreams) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("video_id", stream.videoId());
+            item.put("video_type", stream.videoType());
+            item.put("video_quality", stream.quality());
+            item.put("status", 1);
+            String[] parts = stream.videoId().split("/");
+            if (parts.length >= 2 && LiveCapacityBuilder.DOCK_CAMERA_INDEX.equals(parts[1])) {
+                item.put("camera_position", stream.cameraPosition());
+            }
+            status.add(item);
+        }
+        return status;
     }
 
     /**

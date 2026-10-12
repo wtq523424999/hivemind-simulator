@@ -88,6 +88,7 @@ public class DockOnlineService {
     private final RuntimeConfig runtimeConfig;
     private final DiagnosticLogRecorder diagnosticRecorder;
     private final TopicSchema dockTopicSchema;
+    private final StatePushService statePushService;
 
     /** tid → CompletableFuture，用于等待 status_reply / requests_reply */
     private final ConcurrentHashMap<String, CompletableFuture<JsonNode>> pendingReplies = new ConcurrentHashMap<>();
@@ -98,7 +99,8 @@ public class DockOnlineService {
     public DockOnlineService(SimulatorProperties props, MqttClientManager mqtt, DeviceState state,
                              ObjectMapper objectMapper, RuntimeConfig runtimeConfig,
                              DiagnosticLogRecorder diagnosticRecorder,
-                             DockTopicSchema dockTopicSchema) {
+                             DockTopicSchema dockTopicSchema,
+                             StatePushService statePushService) {
         this.props = props;
         this.mqtt = mqtt;
         this.state = state;
@@ -106,6 +108,7 @@ public class DockOnlineService {
         this.runtimeConfig = runtimeConfig;
         this.diagnosticRecorder = diagnosticRecorder;
         this.dockTopicSchema = dockTopicSchema;
+        this.statePushService = statePushService;
         ensureReplyListeners();
     }
 
@@ -605,8 +608,9 @@ public class DockOnlineService {
 
     /**
      * 构造 live_capacity（直播能力）数据。
-     * <p>live_capacity 是 pushMode=1 属性，DJI 文档规定随 state topic 上报。
-     * 由 {@link #publishDockState()} 合并到机场 state 消息中一次性推送，避免连发两条 state。</p>
+     * <p>live_capacity 是 pushMode=1 属性，DJI 文档规定随 state topic 在能力变化时上报。
+     * 上线全量由 {@link #publishDockState()} 合并推送；之后镜头/舱位/飞行器激活变化由
+     * {@link ltd.cdmi.hivemind.simulator.handler.LiveStreamSimulator} 增量上报。</p>
      * <p>核实依据：DJI Cloud API 直播功能文档「直播能力更新」：
      * - Topic: thing/product/{device_sn}/state
      * - 数据结构: live_capacity → available_video_number / coexist_video_number_max / device_list[] → camera_list[] → video_list[]
@@ -614,36 +618,8 @@ public class DockOnlineService {
      * </p>
      */
     private Map<String, Object> buildLiveCapacity() {
-        // 相机索引随机型解析（TC-LIVE-026/TC-PAYLOAD-026）：与 drone OSD payloads 的 payload_index 同源，
-        // 硬编码 165-0-7（机场相机）会导致平台拼 video_id 与实际推流相机不符
-        String cameraIndex = DefaultCameraResolver.requireDefaultCameraIndex(runtimeConfig.getDroneType(), "live_capacity");
-
-        // 视频流信息（video_list 元素）
-        Map<String, Object> video = new LinkedHashMap<>();
-        video.put("video_index", "normal-0");
-        video.put("video_type", "normal");
-        video.put("switchable_video_types", List.of("normal"));
-
-        // 相机信息（camera_list 元素）
-        Map<String, Object> cameraInfo = new LinkedHashMap<>();
-        cameraInfo.put("camera_index", cameraIndex);
-        cameraInfo.put("available_video_number", 1);
-        cameraInfo.put("coexist_video_number_max", 1);
-        cameraInfo.put("video_list", List.of(video));
-
-        // 子设备信息（device_list 元素）
-        Map<String, Object> device = new LinkedHashMap<>();
-        device.put("sn", runtimeConfig.getDroneSn());
-        device.put("available_video_number", 1);
-        device.put("coexist_video_number_max", 1);
-        device.put("camera_list", List.of(cameraInfo));
-
-        // 直播能力
-        Map<String, Object> liveCapacity = new LinkedHashMap<>();
-        liveCapacity.put("available_video_number", 1);
-        liveCapacity.put("coexist_video_number_max", 1);
-        liveCapacity.put("device_list", List.of(device));
-        return liveCapacity;
+        // 上线时尚未推流：镜头 normal、舱位 0（舱内）。相机索引随机型解析，与 drone OSD payloads 同源。
+        return LiveCapacityBuilder.forDock(runtimeConfig, state, "normal", 0);
     }
 
     /**
@@ -751,6 +727,17 @@ public class DockOnlineService {
         String topic = dockTopicSchema.topic(dockTopicSchema.state(), runtimeConfig.getDockSn());
         mqtt.publishJson(topic, envelope);
         log.info("已推送 dock state（{} 属性，含 live_capacity）", data.size());
+    }
+
+    /**
+     * 上报 pushMode=1 属性变化（只带变化字段，不定频）。
+     * <p>上线全量仍走 {@link #publishDockState()}；属性被 property/set 或控制台改掉后走这里，
+     * 避免把未变化字段再推一遍。</p>
+     *
+     * @param data 仅包含本次变化的字段
+     */
+    public void publishStateChange(Map<String, Object> data) {
+        statePushService.publishGatewayState(data);
     }
 
     /**

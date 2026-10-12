@@ -71,7 +71,7 @@ class PilotOnlineServiceTest {
         when(runtimeConfig.getLocationLatitude()).thenReturn(22.5);
         when(runtimeConfig.getLocationLongitude()).thenReturn(113.9);
         stateBuilders = List.of(new Mavic3StateBuilder(), new M4StateBuilder(), new MatriceStateBuilder());
-        service = new PilotOnlineService(mqtt, state, objectMapper, runtimeConfig, diagnosticRecorder, stateBuilders, mock(MapElementSimulator.class), mock(SituationAwarenessSimulator.class));
+        service = new PilotOnlineService(mqtt, state, objectMapper, runtimeConfig, diagnosticRecorder, stateBuilders, mock(MapElementSimulator.class), mock(SituationAwarenessSimulator.class), mock(StatePushService.class));
     }
 
     /** 捕获 publishJson 的 envelope 参数并转为 JsonNode */
@@ -320,7 +320,7 @@ class PilotOnlineServiceTest {
         when(state.isOnline()).thenReturn(true);
         when(runtimeConfig.getControllerType()).thenReturn(RcModel.RC_PLUS);
         // 重新创建 service，使 topicSchema 使用新的 controllerType
-        service = new PilotOnlineService(mqtt, state, objectMapper, runtimeConfig, diagnosticRecorder, stateBuilders, mock(MapElementSimulator.class), mock(SituationAwarenessSimulator.class));
+        service = new PilotOnlineService(mqtt, state, objectMapper, runtimeConfig, diagnosticRecorder, stateBuilders, mock(MapElementSimulator.class), mock(SituationAwarenessSimulator.class), mock(StatePushService.class));
         service.resendTopo();
 
         JsonNode data = capturePublishedData();
@@ -346,7 +346,7 @@ class PilotOnlineServiceTest {
         when(state.isOnline()).thenReturn(true);
         when(runtimeConfig.getControllerType()).thenReturn(RcModel.RC_PLUS);
         // 重新创建 service，使 topicSchema 使用新的 controllerType
-        service = new PilotOnlineService(mqtt, state, objectMapper, runtimeConfig, diagnosticRecorder, stateBuilders, mock(MapElementSimulator.class), mock(SituationAwarenessSimulator.class));
+        service = new PilotOnlineService(mqtt, state, objectMapper, runtimeConfig, diagnosticRecorder, stateBuilders, mock(MapElementSimulator.class), mock(SituationAwarenessSimulator.class), mock(StatePushService.class));
         service.resendTopo();
 
         ArgumentCaptor<String> topicCaptor = ArgumentCaptor.forClass(String.class);

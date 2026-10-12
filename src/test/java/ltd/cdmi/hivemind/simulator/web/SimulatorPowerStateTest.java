@@ -91,7 +91,8 @@ class SimulatorPowerStateTest {
                 mock(DiagnosticLogRecorder.class), mock(CoverageRecorder.class),
                 mock(ObjectMapper.class), mock(MapElementSimulator.class),
                 mock(SituationAwarenessSimulator.class), mock(PilotHttpSimulator.class),
-                mock(MopClient.class), mock(ltd.cdmi.hivemind.simulator.mqtt.DrcConnectionManager.class));
+                mock(MopClient.class), mock(ltd.cdmi.hivemind.simulator.mqtt.DrcConnectionManager.class),
+                mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
     }
 
     @Test

@@ -1053,7 +1053,7 @@ class DeviceSimulatorTest {
         state.setDroneActivated(true);
         DockOnlineService service = new DockOnlineService(
                 testProps(), Mockito.mock(MqttClientManager.class), state,
-                new ObjectMapper(), config, Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema());
+                new ObjectMapper(), config, Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         Method method = DockOnlineService.class.getDeclaredMethod("buildUpdateTopoData");
         method.setAccessible(true);
@@ -1092,7 +1092,7 @@ class DeviceSimulatorTest {
         MqttClientManager mqtt = Mockito.mock(MqttClientManager.class);
         DockOnlineService service = new DockOnlineService(
                 testProps(), mqtt, state,
-                new ObjectMapper(), config, Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema());
+                new ObjectMapper(), config, Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         service.publishDroneSleepTopo();
 
@@ -1214,15 +1214,20 @@ class DeviceSimulatorTest {
 
     /** 构造指定机型的 DockOnlineService 并捕获 dock state 上报的 live_capacity */
     private JsonNode captureLiveCapacity(DroneModel droneType) throws Exception {
+        return captureLiveCapacity(droneType, false);
+    }
+
+    private JsonNode captureLiveCapacity(DroneModel droneType, boolean droneActivated) throws Exception {
         RuntimeConfig config = testRuntimeConfig();
         config.setDroneType(droneType);
         DeviceState state = new DeviceState();
         state.setOnline(true);
+        state.setDroneActivated(droneActivated);
         MqttClientManager mqtt = Mockito.mock(MqttClientManager.class);
         Mockito.when(mqtt.isConnected()).thenReturn(true);
         DockOnlineService service = new DockOnlineService(
                 testProps(), mqtt, state,
-                new ObjectMapper(), config, Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema());
+                new ObjectMapper(), config, Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
         service.publishDockState();
 
         ArgumentCaptor<Object> captor = ArgumentCaptor.forClass(Object.class);
@@ -1231,31 +1236,40 @@ class DeviceSimulatorTest {
         return new ObjectMapper().readTree(json).path("data").path("live_capacity");
     }
 
+    @DisplayName("TC-LIVE-026：飞行器休眠时 live_capacity 只有机场相机")
+    @Test
+    void liveCapacityOmitsSleepingDrone() throws Exception {
+        JsonNode capacity = captureLiveCapacity(DroneModel.M30);
+        assertEquals("165-0-7", capacity.path("device_list").get(0)
+                .path("camera_list").get(0).path("camera_index").asText());
+        assertEquals(1, capacity.path("available_video_number").asInt(), "休眠时可用路数只计机场");
+    }
+
     @DisplayName("TC-LIVE-026：live_capacity camera_index 随机型（M30→52-0-0，非机场相机 165-0-7）")
     @Test
     void liveCapacityCameraIndexFollowsM30() throws Exception {
-        JsonNode capacity = captureLiveCapacity(DroneModel.M30);
-        String cameraIndex = capacity.path("device_list").get(0)
-                .path("camera_list").get(0).path("camera_index").asText();
-        assertEquals("52-0-0", cameraIndex, "M30 的 live_capacity camera_index 应为主相机 52-0-0");
+        JsonNode capacity = captureLiveCapacity(DroneModel.M30, true);
+        assertEquals("52-0-0", activatedDroneCameraIndex(capacity), "M30 的 live_capacity camera_index 应为主相机 52-0-0");
     }
 
     @DisplayName("TC-LIVE-026：live_capacity camera_index 随机型（M4D→98-0-0）")
     @Test
     void liveCapacityCameraIndexFollowsM4D() throws Exception {
-        JsonNode capacity = captureLiveCapacity(DroneModel.M4D);
-        String cameraIndex = capacity.path("device_list").get(0)
-                .path("camera_list").get(0).path("camera_index").asText();
-        assertEquals("98-0-0", cameraIndex, "M4D 的 live_capacity camera_index 应为主相机 98-0-0");
+        JsonNode capacity = captureLiveCapacity(DroneModel.M4D, true);
+        assertEquals("98-0-0", activatedDroneCameraIndex(capacity), "M4D 的 live_capacity camera_index 应为主相机 98-0-0");
     }
 
     @DisplayName("TC-LIVE-026：live_capacity camera_index 随机型（M400→82-0-0/H30）")
     @Test
     void liveCapacityCameraIndexFollowsM400() throws Exception {
-        JsonNode capacity = captureLiveCapacity(DroneModel.M400);
-        String cameraIndex = capacity.path("device_list").get(0)
-                .path("camera_list").get(0).path("camera_index").asText();
-        assertEquals("82-0-0", cameraIndex, "M400 的 live_capacity camera_index 应为 H30（82-0-0）");
+        JsonNode capacity = captureLiveCapacity(DroneModel.M400, true);
+        assertEquals("82-0-0", activatedDroneCameraIndex(capacity), "M400 的 live_capacity camera_index 应为 H30（82-0-0）");
+    }
+
+    private String activatedDroneCameraIndex(JsonNode capacity) {
+        JsonNode devices = capacity.path("device_list");
+        assertEquals(2, devices.size(), "飞行器激活时 device_list 含机场相机和飞行器");
+        return devices.get(1).path("camera_list").get(0).path("camera_index").asText();
     }
 
     // ===== TC-PROP-005: 机场上线推送 pushMode=1 简单属性到 state topic =====
@@ -1270,7 +1284,7 @@ class DeviceSimulatorTest {
         Mockito.when(mqtt.isConnected()).thenReturn(true);
         DockOnlineService service = new DockOnlineService(
                 testProps(), mqtt, state,
-                new ObjectMapper(), config, Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema());
+                new ObjectMapper(), config, Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         service.publishDockState();
 
@@ -1308,7 +1322,7 @@ class DeviceSimulatorTest {
         Mockito.when(mqtt.isConnected()).thenReturn(true);
         DockOnlineService service = new DockOnlineService(
                 testProps(), mqtt, state,
-                new ObjectMapper(), config, Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema());
+                new ObjectMapper(), config, Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         service.publishDockState();
 
@@ -1436,7 +1450,7 @@ class DeviceSimulatorTest {
 
         DockOnlineService service = new DockOnlineService(
                 testProps(), mqtt, state, om, config,
-                Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema());
+                Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         DockOnlineService.OnlineResult result = service.online();
 
@@ -1457,7 +1471,7 @@ class DeviceSimulatorTest {
         Mockito.when(mqtt.isConnected()).thenReturn(true);
         DockOnlineService service = new DockOnlineService(
                 testProps(), mqtt, state,
-                new ObjectMapper(), config, Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema());
+                new ObjectMapper(), config, Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
 
         service.publishDroneState();
 
@@ -1609,6 +1623,6 @@ class DeviceSimulatorTest {
     private DockOnlineService newOnlineService() {
         return new DockOnlineService(
                 testProps(), Mockito.mock(MqttClientManager.class), new DeviceState(),
-                new ObjectMapper(), testRuntimeConfig(), Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema());
+                new ObjectMapper(), testRuntimeConfig(), Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema(), Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class));
     }
 }
