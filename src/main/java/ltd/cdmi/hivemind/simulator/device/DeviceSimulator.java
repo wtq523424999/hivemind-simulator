@@ -559,8 +559,9 @@ public class DeviceSimulator {
         data.put("attitude_head", state.getAttitudeYaw());
         data.put("latitude", state.getDroneLatitude());
         data.put("longitude", state.getDroneLongitude());
-        data.put("height", state.getDroneHeight());
-        data.put("elevation", state.getDroneElevation());
+        // DJI osd_info_push：height=绝对高度，elevation=相对起飞点高度
+        data.put("height", state.getDroneElevation());
+        data.put("elevation", (float) state.getDroneHeight());
         data.put("speed_x", state.getHorizontalSpeed());
         data.put("speed_y", 0.0);
         data.put("speed_z", state.getVerticalSpeed());

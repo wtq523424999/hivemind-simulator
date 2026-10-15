@@ -38,12 +38,12 @@ public abstract class AbstractDroneOsdBuilder implements DroneOsdBuilder {
         DeviceState state = ctx.getState();
         Map<String, Object> data = new LinkedHashMap<>();
         // 共用基础飞行字段（所有机型都上报）
-        // 字段对齐 DJI M30/M3D/M4D/M400 properties 文档：height=相对起飞点高度，elevation=椭球高/海拔
+        // DJI 飞行器属性：height=绝对高度（椭球高，double），elevation=相对起飞点高度（float）
         data.put(OsdField.MODE_CODE.fieldName(), state.getDroneModeCode());
         data.put(OsdField.LATITUDE.fieldName(), state.getDroneLatitude());
         data.put(OsdField.LONGITUDE.fieldName(), state.getDroneLongitude());
-        data.put(OsdField.HEIGHT.fieldName(), state.getDroneHeight());
-        data.put(OsdField.ELEVATION.fieldName(), state.getDroneElevation());
+        data.put(OsdField.HEIGHT.fieldName(), state.getDroneElevation());
+        data.put(OsdField.ELEVATION.fieldName(), (float) state.getDroneHeight());
         data.put(OsdField.ATTITUDE_PITCH.fieldName(), state.getAttitudePitch());
         data.put(OsdField.ATTITUDE_ROLL.fieldName(), state.getAttitudeRoll());
         data.put(OsdField.ATTITUDE_HEAD.fieldName(), (int) state.getAttitudeYaw());  // int（M30/M3D/M4D 文档均为 int）

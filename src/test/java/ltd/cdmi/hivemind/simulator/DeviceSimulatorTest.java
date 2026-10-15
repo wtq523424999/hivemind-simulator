@@ -166,8 +166,8 @@ class DeviceSimulatorTest {
         assertTrue(data.has("mode_code"));
         assertTrue(data.has("latitude"));
         assertTrue(data.has("longitude"));
-        assertTrue(data.has("height"));       // 绝对高度（椭球面）
-        assertTrue(data.has("elevation"));    // 相对起飞点高度
+        assertTrue(data.has("height"));       // 绝对高度（椭球高，double）
+        assertTrue(data.has("elevation"));    // 相对起飞点高度（float）
         assertTrue(data.has("attitude_pitch"));
         assertTrue(data.has("attitude_roll"));
         assertTrue(data.has("attitude_head"));
@@ -891,7 +891,7 @@ class DeviceSimulatorTest {
         assertTrue(node.has("gateway"), "OSD 信封应包含 gateway");
     }
 
-    // ===== #11: height（相对起飞点）和 elevation（椭球高/海拔）值正确 =====
+    // ===== #11: height（绝对高度/椭球高）和 elevation（相对起飞点）值正确 =====
 
     @DisplayName("补充测试：height 与 elevation 值正确")
     @Test
@@ -900,17 +900,21 @@ class DeviceSimulatorTest {
         DeviceState state = new DeviceState();
         state.setOnline(true);
         state.setDroneActivated(true);
-        state.setDroneHeight(120.0);   // 相对起飞点高度
+        state.setDroneHeight(120.0);       // 相对起飞点高度
+        state.setDroneElevation(620.0);    // 绝对高度（椭球高）
         String json = captureDroneOsdJson(objectMapper, state);
         JsonNode data = objectMapper.readTree(json).path("data");
 
-        // 字段对齐 DJI M30/M3D/M4D properties 文档：
-        // height = 相对起飞点高度（droneHeight）
-        // elevation = 椭球高/海拔（droneElevation，默认 500.0）
-        double height = data.path("height").asDouble();
-        double elevation = data.path("elevation").asDouble();
-        assertEquals(120.0, height, 0.01, "height 应为相对起飞点高度");
-        assertTrue(elevation > height, "elevation（椭球高/海拔）应大于 height（相对起飞点高度）");
+        // DJI 飞行器属性：height=绝对高度（椭球高），elevation=相对起飞点高度
+        assertEquals(620.0, data.path("height").asDouble(), 0.01, "height 应为绝对高度");
+        assertEquals(120.0, data.path("elevation").asDouble(), 0.01, "elevation 应为相对起飞点高度");
+
+        // DRC osd_info_push 同一套语义
+        Map<String, Object> osdInfo = invokePrivate(newSimulator(objectMapper, state), "buildOsdInfo");
+        assertEquals(620.0, ((Number) osdInfo.get("height")).doubleValue(), 0.01, "osd_info_push height 应为绝对高度");
+        assertEquals(120.0, ((Number) osdInfo.get("elevation")).doubleValue(), 0.01, "osd_info_push elevation 应为相对起飞点高度");
+        assertTrue(osdInfo.get("height") instanceof Double, "osd_info_push height 应为 double");
+        assertTrue(osdInfo.get("elevation") instanceof Float, "osd_info_push elevation 应为 float");
     }
 
     // ===== #15/#16: rtk_number 字段名，无 gps_number_in_rtcm =====
