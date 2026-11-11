@@ -74,13 +74,16 @@ hivemind-simulator 把 Dock1/Dock2/Dock3 三代机场、配套飞行器（M30/M3
 ### 两种模式，覆盖大疆云端对接两条核心链路
 
 - **Dock 模式**：模拟机场+飞行器的完整场景，从设备注册、上线、OSD 上报到航线任务、直播推流、媒体上传
-- **Pilot 模式**（v1.1.0 新增）：模拟遥控器直接上云，RC Plus / RC Plus 2 / RC Pro 搭配各种飞行器，走独立的 DRC 协议策略
+- **遥控器上云（单兵）模式**（v1.1.0 新增）：遥控器作网关（domain=2）、飞机作子设备（domain=0），RC Plus / RC Plus 2 / RC Pro 搭配各种飞行器，走独立的 DRC 协议策略。面板内提供「单兵无人机」清单，展示各机型的型号标识、默认负载、OSD/State 字段集与可用能力；数据来自 `GET /api/pilot/capabilities`，由 SDK 搭配表与仓库内 Builder 支持矩阵推导
+
+> **单兵的边界**：Pilot 侧只有航线的 HTTP 列表/上传/下载，没有 `flighttask_prepare` / `flighttask_execute`——这套方法只存在于机库 feature-set。因此单兵不进入"平台自动调度 + 自动起飞"链路：航线由平台经 HTTP 下发、飞手在遥控器上手动执行；平台若把 `flighttask_*` 派给单兵，模拟器显式返回 `314000` 拒绝，而不是静默成功。
 
 ### 协议覆盖
 
 - **完整注册流程**：config → airport_bind_status → airport_organization_get → airport_organization_bind → update_topo 上线
 - **OSD/State 上报**：按设备类型构造差异化字段（Builder+策略模式），不同机型字段精确区分
 - **航线任务模拟**：flighttask_prepare 到 flighttask_execute，6 步进度推进，支持暂停/恢复/取消/停止，任务完成后自动触发媒体上传
+- **航点拍照与媒体回传**：解析 KMZ/WPML 的 `actionGroup`+`takePhoto` 动作，飞行器到达对应航点时按拍摄瞬间的位置/高度/云台偏航角生成照片；`air_transfer_enable` 开启时照片在飞行中即时上传，关闭时落地后批量上传。照片内容取自 `media-dir`：优先用你放入/上传的图片（多张按文件名顺序轮换），目录只有预置样例时用内置 3 张真实示例照片，视频不会当作照片
 - **直播推流**：FFmpeg WHIP 真实 WebRTC 推流（非纯协议应答），视频循环播放持续推流，不支持 WHIP 时自动降级 RTMP
 - **媒体上传**：storage_config_get 拿 STS 凭证，S3 兼容协议上传到对象存储（阿里 OSS/AWS/MinIO/华为 OBS），file_upload_callback 逐个上报等平台确认
 - **DRC 远程指挥**：摇杆控制、应急停止、迫降、相机夜视、补光灯、喊话器，20+ 下行指令
@@ -216,7 +219,9 @@ docker compose down                # 停止（带 --profile local-mqtt 才会停
 docker compose up -d --build       # 重新构建并启动
 ```
 
-> **说明**：直播真实推流和媒体上传的素材文件，通过模拟器页面「直播推流配置」弹窗中的「上传视频」/「上传媒体」按钮传入（Docker 卷内），无需 `docker cp`。
+> **说明**：直播真实推流和媒体上传的素材文件，通过模拟器页面「直播推流配置」弹窗中的「上传视频」/「上传媒体」按钮传入（Docker 卷内），无需 `docker cp`；「上传媒体」支持一次多选。
+>
+> **航线拍照用哪张图**：`media-dir` 里的图片优先，多张按文件名顺序轮换；目录只有预置样例时使用内置的 3 张真实示例照片。视频文件不参与拍照。换自己的照片只需把 jpg/png 放进目录或经「上传媒体」传入，下一次拍照即生效，无需重启。
 
 ### 配置
 
@@ -267,8 +272,8 @@ server:
 
 - 注册成功后自动上线
 - 可手动下线
-- 飞行器激活/休眠切换（飞行器在舱时可操作）
-- 舱盖开合、推杆伸展状态切换
+- 飞行器激活/休眠切换（机库模式在舱时可操作；遥控器上云在「状态模拟」卡片切换，休眠即从平台拓扑下线）
+- 舱盖开合、推杆伸展状态切换（仅机库模式）
 
 ### 状态参数
 
@@ -348,6 +353,7 @@ hivemind-simulator/
 | [设计文档](docs/superpowers/specs/2026-08-08-dji-dock-simulator-design.md) | 架构、DJI 时序图、协议覆盖、数据流、错误码体系、update_topo 核实结论 |
 | [TDD 规格测试文档](docs/TDD-SPEC.md) | 容易搞错的规格陷阱、测试用例、TDD 开发模式 |
 | [模拟器与真机差异说明](docs/SIMULATOR-VS-REAL-DEVICE.md) | 模拟器与真机的全部已知差异（结构性简化 + 协议留白推断）、自查方法、真机对拍建议 |
+| [多机库模拟](docs/FLEET-MULTI-DOCK.md) | 多机库搭建、平台侧预置要求、SN/坐标对齐、智能航线引擎（按距离选库）对接路线与打分建议 |
 
 ### DJI Cloud API 参考
 
@@ -369,7 +375,8 @@ hivemind-simulator/
 以下为暂未支持、计划演进的方向，欢迎在 Issue 中讨论或认领（标注 `good first issue` 的适合首次贡献）：
 
 - [x] 真实 KMZ/WPML 航线解析与实时飞行 OSD（支持 HTTP(S)、file URL 和本地路径）
-- [ ] 多机模拟（当前为单机）
+- [x] 多机库模拟：控制台「机库管理」支持页面一键新建实例（自动创建容器 → 连接 MQTT → 注册上线）、聚合多机库状态、批量开关机/注册/上线、下发坐标、按距离选库排序，并按清单生成多实例 compose 编排；表格里的「控制台」通过同源代理 `/fleet/{id}/` 打开其他机库，从任意入口（9090 / 9513 / 反代域名）都能访问，无需为目标实例单独开放端口（见 [多机库模拟](docs/FLEET-MULTI-DOCK.md)）
+- [ ] 蛙跳任务执行（`multi_dock_task` 目前已解析记录，尚未驱动飞行）
 
 > 当前与历史变更见 [CHANGELOG.md](CHANGELOG.md)。
 

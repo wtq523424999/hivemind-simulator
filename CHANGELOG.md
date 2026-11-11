@@ -4,10 +4,86 @@
 
 ## [Unreleased]
 
+### 新增
+- **遥控器上云控制台可切换飞行器「激活/休眠」**：机库管理界面打开遥控器实例控制台后，右侧「状态模拟」卡片新增飞行器激活开关（此前只有机库模式有）。Pilot 模式此前在 `/api/state` 被硬性拒绝 `droneActivated=false`，前端也没有对应控件，单兵实例的飞行器只能一直激活；现在两种接入模式语义一致：
+  - **休眠**：`droneActivated` 置 false 后停止推送 drone OSD，并向平台发送 `sub_devices` 为空的 `update_topo`（网关仍是遥控器 SN），平台侧飞行器子设备下线
+  - **激活**：状态置 true 后重发带飞行器的 `update_topo` 把子设备挂回拓扑，同时补推 drone state 初始属性（此前单兵唤醒不重发拓扑，平台会一直认为飞行器离线）
+  - **上线/下线**：遥控器上线时先置激活再发 `update_topo`，首次上线仍带飞行器；`update_topo` 的 `sub_devices` 改为跟随激活状态（`PilotOnlineService.buildUpdateTopoData`），监控器重连重发拓扑时口径一致
+  - **live_capacity 联动**：单兵休眠时 `live_capacity` 的 `device_list` 为空、可用路数为 0，与机库模式同口径，避免平台按能力表发起必然失败的 `live_start_push`
+  - 新增 `PilotDroneActivationTest`（休眠发空拓扑、唤醒重发拓扑并补推 state、未上线只改本地状态、机库链路未受影响）与 `LiveStreamSimulatorTest` 单兵休眠 live_capacity 断言
+- **「机库管理 → 控制台」改为同源代理，从任意入口（9090 / 9513 / 反代域名）都能打开其他机库**：此前该按钮把清单登记的地址直接交给浏览器打开，而清单里存的是**服务端视角**地址——容器部署时是 `容器名:9090`，浏览器解析不了 Docker 内部主机名；其他实例的宿主机端口（9091/9100…）对外通常也没有映射，点击后必然打不开。现改为打开当前入口下的子路径 `http://<当前入口>/fleet/<实例 id>/`，由后端反向代理到目标实例：
+  - **代理路径**：`/fleet/{id}/` 覆盖页面、REST 接口、静态资源与上传下载，一次注册全部透传（`FleetConsoleProxyController`）。本机实例（勾选「当前实例」）走内部回环 `127.0.0.1:server.port`，与既有服务端调用一致
+  - **路径改写**：目标页面的 `/api/...`、`/vendor/...`、`/panels/...`、`/monitor.html`、`/favicon.svg` 与 `href="/"` 全部前插实例前缀（`FleetConsoleRewriter`），否则页面里的接口请求会打到当前实例而不是目标实例。只改紧贴引号的根路径字面量，`topic.endsWith('/' + f)` 这类普通斜杠不受影响；`//cdn...` 协议相对地址不动
+  - **存储隔离**：代理后所有实例共享一个 origin，`localStorage` 也会共享。注入到 `<head>` 最前面的脚本按实例 id 加前缀（`fleet:<id>:`），注册连接配置、已注册标记、高德 Key 不会跨实例串用
+  - **上传与流式响应**：新增 `MultipartConfig`，对 `/fleet/**` 跳过 multipart 解析（否则 Spring 会先把 form-data 读成 part，代理转发时 body 为空，报 `Required part 'file' is not present`）。代理以同步流式方式转发，SSE（一键安装 FFmpeg 进度）与 512MB 视频上传均不被额外的异步超时截断
+  - **不嵌套**：从代理页面里再打开第三个机库，链接仍是 `/fleet/{第三个id}/`（落在入口根），不会叠加成 `/fleet/A/fleet/B/`；该前缀刻意不参与改写
+  - 新增 `FleetService.findInstance(id)`（代理解析目标实例）与 `FleetConsoleProxyController.consolePath(id)`；前端 `openConsole`/`openRegistry` 改用相对路径，表格里的地址列显示代理路径、`title` 悬停仍可看到清单内部地址
+  - TC-FLEET-801~808（HTML 属性改写、`href="/"`、内联脚本字面量、普通斜杠不误改、协议相对地址不动、JavaScript 接口路径、存储隔离注入位置、`/fleet/` 链接不重复前插）
+- **机库管理支持「遥控器上云」类型，可与机库并存并保持在线**：此前「机库管理」只认机场上云语义（`dockSn`/`dockType`），新增的实例只能是机库，无法在同一份清单里登记遥控器（单兵）实例。现在清单、表单、状态聚合、身份下发、平台预置与容器创建全链路都支持两种接入模式，可在一个控制台里同时管理 N 台机库 + M 台遥控器（M350 RTK + RC Plus 实测端到端上线并保持在线）：
+  - **清单与表单**：`FleetInstance` 新增 `deviceMode`（DOCK / PILOT）、`controllerType`、`controllerSn`。表单新增「接入模式」切换：选「遥控器上云」时显示遥控器机型（来自 SDK `RcModel`）与遥控器 SN，飞行器下拉按 `DeviceCompatibility` 搭配关系联动（如 RC Plus → M350 RTK / M300 RTK / M30 / M30T），不再显示无关的机场机型字段
+  - **身份下发**：「对齐设备身份」按模式下发——PILOT 下发 `device_mode` + `controller_sn/controller_type` + 飞行器身份；DOCK 下发 `device_mode` + `dock_sn/dock_type`。二者互不污染，切换模式时不会把旧模式的 SN 写进清单
+  - **模式切换安全**：清单登记 PILOT 但实例仍在线为 DOCK 时，bringup 会先「下线旧拓扑」再下发身份，避免平台侧同时存在两套拓扑；身份对齐后刷新一次状态，避免 `apply_identity` 顺带完成的连接被后续步骤重复执行
+  - **状态聚合**：`FleetInstanceStatus` 新增 `controllerSn` / `controllerType` / `gatewaySn`，表格按模式展示「网关 SN / 机型」（DOCK=机场、PILOT=遥控器），概览区分「机库 / 遥控器」数量。遥控器实例标记为「不可派遣」并说明原因（单兵无机库任务能力，平台无法派发 `flighttask_*`）
+  - **平台预置**：PILOT 实例导出的网关记录为 `kind='REMOTE_CONTROLLER'`、`sn=<遥控器 SN>`、`model=<遥控器机型>`，飞行器通过 `gateway_sn=<遥控器 SN>` 挂载；不再写只有机场才有的 `linked_drone_id`
+  - **容器创建**：provisioner 新增 `deviceMode` / `controllerType` / `controllerSn` 入参，容器**首启即为遥控器身份**（注入 `SIMULATOR_DEVICE_MODE` / `SIMULATOR_CONTROLLER_TYPE`），不再依赖「创建后再 connect 一次」——否则实例在 connect 之前被重启会退化为机场
+  - **接入模式持久化（关键修复）**：`deviceMode` / `controllerType` / `selectedPayload` 此前不落盘，容器重启后 PILOT 实例会静默退回 DOCK，遥控器不再是网关、平台侧该设备永久离线。现随 `live-config.json` 持久化并在启动时恢复，实测重启后 `device-info` 仍为 `PILOT` 且 `controllerSn` 不变，一键启用可直接恢复上线
+  - 新增 `simulator.device.mode` / `simulator.device.controller-type` 配置项（支持 `SIMULATOR_DEVICE_MODE` / `SIMULATOR_CONTROLLER_TYPE` 环境变量），仅作为「没有 live-config.json 时的初值」，控制台改过的身份优先
+  - `GET /api/fleet/models` 新增 `controllerTypes`（含每个遥控器可搭配的飞行器）与 `deviceModes`；`GET /api/fleet/node-summary` 新增 `controllerSn` / `controllerType` / `gatewaySn`
+  - TC-FLEET-701~712（PILOT 实例登记保留身份、非法模式拒绝、缺省归一化 DOCK、遥控器不可派遣、机型选项含遥控器与搭配、平台预置用遥控器 SN 与 `REMOTE_CONTROLLER`、缺遥控器 SN 跳过、compose 双模式并存、清单 JSON 往返不被派生属性破坏、更新切换模式、不可达占位保留遥控器身份、网关 SN 回落）
+- **页面一键新建模拟器实例（实例供给服务 provisioner）**：新增独立边车 `provisioner/`，「机库管理 → 新建机库」选「新建并启动」后，一次点击完成 **登记 → 创建容器 → 对齐设备身份 → 开机 → 连接 MQTT → 注册上线**，实测完整闭环约 7.6 秒，不再需要手工 `docker run`。设计要点：
+  - **权限隔离**：模拟器主容器不挂 Docker socket；容器创建能力放在独立边车，主容器只通过 HTTP 调用。边车只暴露 `/health`、`/create`、`/remove`、`/inspect`、`/ports` 五个接口，不代理任意 Docker API
+  - **白名单约束**：镜像白名单（默认仅模拟器镜像，且要求宿主机已存在、不触发拉取）、端口限制在 9100~9199、容器只能加入指定 bridge 网络、不挂宿主机目录、不加 privileged、不用 host 网络；容器名与 config 卷名由服务端从实例名派生
+  - **删除保护**：只允许删除带 `hivemind.simulator.managed=true` 标签的容器（即本服务创建的），手工起的容器拒绝删除
+  - **自动回填地址**：创建成功后把清单里的地址回填为 `容器名:9090`（同网络内可达），无需用户知道宿主机映射端口
+  - **未部署时自动降级**：无供给服务时「新建」只登记清单并提示原因，其余功能照常；主容器通过 `SIMULATOR_PROVISIONER_URL` 配置
+  - 新增接口 `POST /api/fleet/instances/provision`、`GET /api/fleet/provisioner`；`DELETE /api/fleet/instances/{id}` 新增 `removeContainer`/`removeVolume` 参数
+- **注册流程顺序修复（影响新建实例能否上线）**：
+  - **设备身份对齐提前到开机前**：SN 一旦上线就不能再改（实例拒绝、平台拓扑已按旧 SN 建立）。此前新建实例沿用机型 defaultSn，与清单登记的固定 SN 不一致，上线时平台按「未知网关」拒绝（210231）。现将「对齐设备身份」作为 bringup 第一步执行；设备已在线且 SN 不一致时明确要求先下线
+  - **注册参数支持补发**：`organization_id`/`device_binding_code` 只能通过 `/api/connect` 写入实例。此前实例「已连接」时整步跳过，这些值没有更新机会，注册必然因绑定码不匹配失败（210229）。现改为只要请求带了注册参数，即使已连接也补发一次 connect
+  - 坐标下发步骤与身份对齐步骤拆分（`set_location`），避免共用 `apply_identity` 造成语义混淆
+- TC-FLEET-601~606（未部署供给服务时降级、autoProvision=false、参数非法时校验先失败且不落库、provisionerStatus、删除机库、删除不存在的机库）
+- TC-MQTT-030~036（下行订阅刷新：Dock 模式订阅机场 SN、Pilot 模式订阅遥控器 SN、切换模式后遥控器 SN 进入订阅集、修改遥控器 SN 后订阅集跟随变化、未连接时 resubscribe 安全返回 0、订阅集去重、两种网关 SN 同时订阅）
+- **多机库管理（机库群控制台）**：控制台 header 新增「机库管理」，把多个模拟器实例当作一组机库统一编排，用于在平台侧验证「按距离智能选库生成航线」。每个机库仍是一个独立进程（独立 config 卷、独立 MQTT、独立 SN、独立坐标），本功能只加控制面，不改设备状态模型，也不接管 MQTT 通信。能力包括：
+  - **清单管理**：登记/编辑/移除机库（名称、控制台地址、机型、SN、经纬度、海拔），持久化到 `SIMULATOR_CONFIG_DIR/fleet.json`（与 `live-config.json` 同目录，跟随 config 卷，重启不丢）
+  - **状态聚合**：并发拉取各实例的 `/api/fleet/node-summary`（一次请求取全量），聚合为「可达 / 开机 / MQTT / 在线 / 实际 SN / 机型 / 坐标 / 电量 / 在舱 / 任务占用 / 可派遣」一张表；单台不可达降级为灰色可诊断状态，不阻塞其他实例。旧版本实例无该端点时自动回退到 `/api/device-info` + `/api/connection` + `/api/location`，缺失字段置 null 而非误判
+  - **一键启用（顺序工作流）**：`POST /api/fleet/bringup` 按「开机 → 连接 MQTT → 上线 → 下发坐标」顺序执行，各步幂等（已满足即跳过），前一步失败中止该台后续步骤但继续处理其他机库，返回逐台逐步明细
+  - **选库排序**：`GET /api/fleet/candidates` 按到目标点的 haversine 直线距离排序候选机库，并标注可派遣性（在线 / 在舱 / 电量 ≥30% / 无执行中任务 / 已上报坐标）。只提供模拟器可确证的数据，完整选库权重策略仍属平台业务
+  - **清单导入导出**：`GET /api/fleet/instances/export`、`POST /api/fleet/instances/import?replace=`，支持整表替换与按 id 合并；非法条目单独拒绝并列出原因，其余照常导入
+  - **平台预置导出**：`GET /api/fleet/platform-seed` 与 `/platform-seed.sql` 按清单生成平台侧 `dock` / `device` 记录（JSON 对齐平台 `POST /api/docks`、`POST /api/devices`）与可重复执行的 SQL（`WHERE NOT EXISTS` + 自动补 `linked_drone_id`），解决「平台只允许已知网关绑定」导致的上不了线问题
+  - **批量操作**：批量开机 / 连接 / 上线 / 下线，以及「下发身份/坐标」把清单登记的 SN、机型、坐标写回各实例；部分失败逐条列出，不影响其他实例
+  - **编排生成**：按清单生成 `docker-compose-fleet.yml`（每实例独立 config 卷、共享 media/videos、注入 `SIMULATOR_LOCATION_*`、开启唯一 SN 模式），支持复制与下载；本机实例与停用实例不写入编排（避免端口冲突）
+  - **容器内自访问修正**：新增 `selfInstance` 标记。容器部署时对外端口是宿主机映射端口（如容器内 9090 映射到宿主机 9513），在容器内不可达；标记后服务端动作改走内部回环 `127.0.0.1:server.port`，浏览器侧仍用对外地址
+  - 新增接口：`GET/POST /api/fleet/instances`、`PUT/DELETE /api/fleet/instances/{id}`、`GET /api/fleet/statuses`、`GET /api/fleet/models`、`POST /api/fleet/instances/{id}/actions`、`POST /api/fleet/batch`、`GET /api/fleet/compose`
+  - 机型选项与型号名由 SDK `DockModel`/`DroneModel` 枚举推导（`shortName()` 与控制台既有标签口径一致），前端不维护静态机型表
+- **`docker-compose-multi.yml` 修正**：镜像名改为跟随 compose 项目名的 `hivemind-simulator-simulator:latest`（原 `dock-simulator-simulator` 与实际构建产物不符）；Broker 默认改为 `host.docker.internal` 并支持 `${SIMULATOR_MQTT_USERNAME/PASSWORD}` 注入（原硬编码 `uas-emqx` + 平台内部凭证）；移除不存在的 `uas-network` external 网络引用（原样 `compose up` 会直接失败，现改为注释说明按需启用）；为三实例分别注入相距数公里的 `SIMULATOR_LOCATION_*`，使距离选库验证有区分度
+- 新增 [docs/FLEET-MULTI-DOCK.md](docs/FLEET-MULTI-DOCK.md)：多机库搭建、平台侧必须预置的 `dock`/`device` 记录、SN 对齐的两种做法、坐标两处来源（静态 vs `displayLat/displayLng`）、智能航线引擎的两种对接路线与打分建议、排查表
+- TC-FLEET-001~008（清单持久化：缺失/损坏/空清单降级、版本归一化、父目录自建、旧字段兼容、baseUrl 归一化）、TC-FLEET-101~122（清单增删改查与校验、本机识别与容器映射端口、不可达降级、SDK 机型选项、compose 生成含本机/停用排除与服务名派生）、TC-FLEET-201~210（haversine 距离与已知值对齐、候选排序、limit、电量/任务/在舱/未上线对可派遣的影响、未知字段不排除）、TC-FLEET-301~306（清单导出导入往返、合并模式、同 id 覆盖、非法条目单条拒绝、导出不含凭据）、TC-FLEET-401~404（启用工作流：不可达即失败、已满足步骤跳过、停用实例不参与、ids 范围限定）、TC-FLEET-501~505（平台预置：dock/device 记录与 SQL 生成、缺 SN 跳过并说明、单引号转义、默认组织、停用排除）
+- **两种模式均可自定义 SN，并自动填充当前生效值**：机场上云可改机场 SN + 飞行器 SN，遥控器上云可改遥控器 SN + 飞行器 SN，两套身份相互独立、切换模式不互相污染。打开「注册到第三方平台」弹窗时按当前生效 SN 自动填充输入框，型号切换后自动刷新为新型号的默认值。遥控器 SN 覆盖优先级为「手动覆盖 > 型号 defaultSn」，持久化到 `live-config.json`，重启后恢复；在线时禁止修改，非法格式（含 `/`、`+`、`#` 等 topic 保留字符）明确拒绝。接口为 `POST /api/connect` 的 `controller_sn` 字段，`GET /api/device-info` 新增 `controllerSnOverride`
+- **单兵无人机能力清单（前端面板 + 只读端点）**：遥控器上云面板新增「单兵无人机」卡片，列出当前遥控器可搭配的飞机及其行为属性（型号标识 `domain-type-sub_type`、默认负载与相机索引、是否热成像、OSD/State 字段集、可用能力），并高亮当前选择的机型、附上单兵模式边界说明。数据来自新增的 `GET /api/pilot/capabilities`，由 SDK `DeviceCompatibility` 搭配表与仓库内 `DroneOsdBuilder`/`DroneStateBuilder` 支持矩阵推导，前端不维护静态机型表，避免 SDK 升级或新增机型后与实际设备行为漂移
+- **遥控器上云（单兵）语义补齐**：单兵的网关是遥控器（domain=2），飞机是子设备（domain=0），与机场上云（domain=3）共用同一套 MQTT 通道。此前 `PILOT` 模式虽可用，但多处仍按"机库"语义工作，本次对齐：
+  - 单兵拒绝机库专属的 `flighttask_prepare` / `flighttask_execute` / `flighttask_pause` / `flighttask_recovery` / `flighttask_undo` / `flighttask_stop` / `flight_setup_abort`，返回 `314000`（当前状态不支持）并记录 P-8 诊断，不再静默回 `result=0`。Pilot 侧只有航线的 HTTP 列表/上传/下载，航线由飞手在遥控器手动执行
+  - 上行事件（HMS / AirSense / 航线进度 / 媒体回调 / 远程日志 / 飞行区等）统一发往**当前网关 SN**（单兵为遥控器 SN），不再固定发往机场 SN
+  - 上行 `requests` 与 `state` 的 `gateway` 字段、`requests_reply` 监听同步改为网关 SN
+  - `POST /api/live/state/publish` 在单兵模式下推送遥控器 state，不再推机场 state
+  - 飞行器激活/休眠在单兵模式下走 `PilotOnlineService` 的遥控器拓扑，不再发送机场 `update_topo`
+
 ### 修复
+- **风速上报被放大 10 倍（`wind_speed: 30` 实为 3 m/s）**：机场与飞行器 OSD 的 `wind_speed` 在构建时都乘了 10（`getWindSpeed() * 10`、`getDroneWindSpeed() * 10`），依据是「DJI 文档单位 0.1 m/s」——该依据不成立。DJI Dock1/Dock2 properties 文档字段表原文为 `wind_speed | 风速 | float | {unit_name: "米每秒 / m/s"}`，飞行器 properties 文档同样标注 float 且无换算说明；平台侧（uav-platform）按 m/s 直接消费并与 `maximumWindMps` 阈值比较，于是 3 m/s 被读成 30 m/s，正常天气也会命中「风雨条件尚未满足」的拒飞判定。现统一为 **m/s 原值上报、不做任何倍数换算**：`AbstractDockOsdBuilder` 与 `AbstractDroneOsdBuilder` 去掉 ×10，`PropertySetHandler` 收到 `wind_speed` 时去掉 /10。新增 `WindSpeedUnitTest` 锁定该约定（含拒飞阈值 9 m/s 边界）。注意此修复会改变线上报文数值：原 `wind_speed: 30` 现为 `3.0`，平台若已按错误值做过阈值放宽需一并回调
+- **机场环境参数改了不生效（前端整包回写与轮询互相覆盖）**：控制台的「机场状态模拟」把整个 `editState` 一次性 `PUT /api/state`，同时页面每 2 秒轮询 `/api/state` 并用返回值覆盖同一个 `editState`。两个方向共用一个缓冲区，一旦轮询响应落在「编辑完成」与「提交完成」之间，或连续修改多个字段，后到的整包快照就会把刚改的值连同其他字段一起写回旧值（联调实测：把风速从 3.0 调到 3.5，OSD 只上报了一帧 `wind_speed: 35`，2 秒后即回到 30）。现改为**只提交本次变化的字段**：控件 `@change` 明确传入字段名（`saveState('windSpeed')`），后端本就支持部分字段更新；同时 `refreshState` 不再覆盖「已本地修改但尚未被服务端确认」的字段，并用写入版本号丢弃「写之前发出、写之后才返回」的过期轮询响应。服务端返回的权威值会立即回填，界面与后端保持一致。新增前端行为测试覆盖单字段提交、在途旧轮询不打回、未提交编辑被保留、连续改多字段、外部改动能带出等 5 类场景
+- **平台通过 `property/set` 改机场环境参数是「假成功」**：`PropertySetHandler` 只处理 `silent_mode` / `air_transfer_enable` / `user_experience_improvement` 三个属性，其余字段一律回 `{"result": 0}` 却不更新 `DeviceState`——平台显示设置成功，机场 OSD 毫无变化，联调时无法判断是平台没发还是模拟器吞了。现补上环境参数的写入：`temperature` / `humidity` / `rainfall` / `environment_temperature` / `cover_state` / `emergency_stop_state` / `wind_speed` 直接生效（均为 DJI 文档原生单位，不做换算）。这些属性是 pushMode=0（由 OSD 带出），不走 state 增量上报
+- **机场环境参数重启后丢失**：`DeviceState` 是纯内存对象，`windSpeed` / `dockTemperature` / `environmentTemperature` / `rainfall` 等不落盘，容器重启即回到默认值（3.0 m/s / 25℃ / 50%），而拒飞判定（风速≥9 m/s → 514135、环境温度<-20℃ → 514137）依赖它们，重启后无法复现同一场景。现新增 `DockEnvStateStore`，把可模拟的环境参数持久化到 `live-config.json` 同目录的 `dock-env-state.json`，与控制台改值（`/api/state`）和平台下发（`property/set`）两条路径联动写入，启动时自动恢复。旧文件缺少新增字段时保留内存当前值，损坏文件降级为默认值不阻断启动
+- **接入模式/网关 SN 在已连接状态下变更后，下行订阅不刷新**：MQTT 下行 topic 的订阅只在 `connectComplete` 回调里执行一次。运行期切换「机场上云 ↔ 遥控器上云」或修改 SN 时，MQTT 连接不会断开，回调不触发，订阅集仍是按旧 SN 算的——平台下发到新网关 SN 的 `services` / `property/set` / `events_reply` / `requests_reply` / `status_reply` / `drc/down` 全部无人接收（联调实测：先以 DOCK 模式连接、再切到 `PILOT` + 遥控器 SN `1581F5RCD001002` 后，订阅仍是旧机场 SN，`update_topo` 能成功但平台指令收不到）。现新增 `MqttClientManager.resubscribe()`：按当前网关身份幂等重订阅（保留机场 SN 订阅，切回时无需再次刷新），`/api/connect` 在检测到网关 SN 或接入模式变化时自动调用，并在响应中返回 `gateway_changed` / `resubscribed`。修复后同一场景无需手动重连，平台指令即时送达并回 `services_reply`（`drc_mode_enter` 返回 0）
+  - 订阅计算抽取为 `computeDownTopics()`、单条订阅收敛到 `subscribeTopic()`，便于单测断言"切换后订阅集确实包含新网关 SN"而无需真实 broker
+- **航点拍照上传的是纯蓝色占位图**：内置示例照片原为一张 1280×720 全蓝图片，`media-dir` 未配置或只有预置样例时，每次拍照上传的都是它。现改为 3 张真实风景示例照片（1280×720，单张 90~170KB）并按拍照序号轮换；`media-dir` 里你放入/上传的图片优先生效，不再按文件名和样例混排（样例名 `sample-*` 排序靠前会导致取不到用户图）；视频不再被当成照片上传。旧部署启动时会识别并替换那张全蓝图（按 SHA-256 精确匹配，你自己放的同名文件不动），同时补齐新增的两张样例图。「上传媒体」按钮支持一次多选
+- **遥控器上云拓扑上报的 Topic 与回复监听不匹配**：`PilotTopicSchema` 此前按型号分叉——RC Plus / RC Pro 的 `update_topo` 发到 `sys/product/{gateway_sn}/status`，RC Plus 2 则在 `thing/product/{gateway_sn}/status_reply` 上等回复。DJI Pilot 上云设备文档对 RC 与 RC Pro 型号的规定一致：上行 `thing/product/{gateway_sn}/status`，回复 `sys/product/{gateway_sn}/status_reply`。现所有遥控器型号统一按此实现，机型差异只体现在报文字段（domain/index）。此前 RC Plus 把拓扑发到 `sys` 通道，平台侧若按 `thing` 订阅则收不到；RC Plus 2 在错误通道等回复，10 秒超时后按"不下线"继续，平台返回的非零 `result` 被静默吞掉
+- **单兵模式网关 SN 未使用遥控器覆盖值**：`getGatewaySn()` 直接读取 `controllerSn` 字段而非生效的遥控器 SN，导致覆盖值不生效，MQTT topic 仍带型号默认 SN
+- **切换接入模式后单兵收不到平台指令**：下行监听器在应用启动时按当时的网关 SN（默认 DOCK 的机场 SN）注册，运行期切到遥控器上云后，平台下发到遥控器 SN 的 `services`/`property/set`/`drc/down` 等消息无人处理。现监听器额外按网关无关形式（`thing/product/+/...`、`sys/product/+/...`）登记别名，并加设备归属校验，避免误响应同一 broker 上其他设备的指令
+- **遗嘱报文网关类型写死为机场**：MQTT 遗嘱此前固定 `type=3`（机场），遥控器异常掉线时平台会收到"机场下线"。现按当前网关型号构造（遥控器 domain=2）
+- **`file_upload_callback` 字段语义偏差**：`ext.payload_model_key` 此前误填飞行器型号，改为负载（相机）枚举值；`metadata` 的位置/高度/云台偏航/拍摄时间改为拍摄瞬间值（此前恒为机场配置值 + 虚构偏移）；`create_time` 按官方格式输出 `yyyy-MM-dd HH:mm:ss`；`flighttask_progress.ext.media_count` 改为真实已拍媒体数（此前填任务步骤索引）
 - **飞行器 OSD 高度字段对调**：`thing/product/{drone_sn}/osd` 与 DRC `osd_info_push` 的 `height`/`elevation` 此前按内部变量名直出，与 DJI 文档相反。现 `height` 上报绝对高度（椭球高，double），`elevation` 上报相对起飞点高度（float）
 
 ### 新增
+- **航点拍照与媒体回传（对齐真机链路）**：`WaylineRouteLoader` 解析 WPML `actionGroup`（仅 `reachPoint` 触发）与 `actionActuatorFunc=takePhoto`，`WaylineFlightEngine` 在到达对应航点时按拍摄瞬间遥测（经纬度/椭球高/相对高/云台偏航/`fileSuffix`）产出媒体快照，任务完成或空中回传时按大疆时序上传 MinIO 并逐条上报 `file_upload_callback`。`air_transfer_enable` 开启（默认）时拍照即上传（Dock3 最新固件支持航线任务空中回传），关闭时落地后批量上传；上传失败的文件不上报回调，避免平台按不存在的 `object_key` 取图
 - **pushMode=1 状态变化上报**：`thing/product/{gateway_sn}/state` 不再只在上线时推一次全量。`property/set` 改到 `silent_mode` / `air_transfer_enable` / `user_experience_improvement`、控制台改静音模式、直播开停推流、镜头切换、舱内/舱外切换、飞行器激活/休眠时，只推变化字段（不定频）。值未变化不发。设备未上线时跳过，下次上线全量仍带当前值。`live_capacity` 改为按当前推流构造：Dock 含机场相机 `165-0-7`（舱位）+ 飞行器主相机（镜头类型），飞行器休眠时从 `device_list` 移除
 
 ## [v1.4.9] - 2026-09-04
