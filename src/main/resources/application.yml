@@ -102,6 +102,13 @@ simulator:
   # 默认值 1.2.3 为 DJI Dock3 最新物模型版本，可根据实际模拟设备调整
   thing:
     thing-version: "1.2.3"
+  # 多机库实例供给服务（provisioner 边车）
+  # 配置后，「机库管理 → 新建并启动」可直接创建新实例容器（不必手工 docker run）；
+  # 留空则新增机库只登记清单、不创建容器，行为与之前一致。
+  # 边车见 provisioner/ 目录：单独容器运行，只暴露固定几个接口，
+  # 且带镜像白名单、端口范围限制，模拟器主容器因此不必持有 Docker socket。
+  fleet:
+    provisioner-url: ${SIMULATOR_PROVISIONER_URL:}
 
 # ========================================
 # Web 控制台端口

@@ -3,6 +3,10 @@
 # ========================================
 # 用途:同时模拟多个机场和飞行器,每个实例 = 一台机场 + 一台飞行器
 #
+# 推荐用法(控制台一键生成):
+#   在任意一个实例的控制台点击「机库管理 → 生成编排」,按当前机库清单生成
+#   docker-compose-fleet.yml。本文件是手工维护的参考模板,保留三实例固定配置。
+#
 # 前置条件:
 #   1. 镜像已构建:docker compose -f docker-compose.yml build simulator
 #      (本文件复用同一镜像,不重复构建)
@@ -18,6 +22,11 @@
 #   重启后设备身份不变 → 三实例可共用同一 broker 而不冲突
 #   (单实例默认模式 SN 为型号固定值:DOCK3+M4TD → 7UUXN1Q00A008W / 1081F8HGD25110010059)
 #
+#   平台侧预置提示:注册前必须在平台 dock/device 表里预置该实例的 SN
+#   (平台 airport_organization_bind 只允许已知网关绑定)。唯一 SN 是随机的,
+#   若需要与平台预置 SN 对齐,请在控制台「机库管理」里给每个实例填固定 SN 后
+#   执行「下发身份/坐标」,再用该 SN 去平台建机库记录。
+#
 # 访问:
 #   模拟器1: http://localhost:9090  (SN 见前端设备信息面板/启动日志「唯一 SN 模式」)
 #   模拟器2: http://localhost:9091
@@ -26,12 +35,17 @@
 # 端口分配:
 #   每个实例容器内统一 9090,宿主机映射不同端口(9090/9091/9092)
 #
+# 坐标:
+#   每个实例用 SIMULATOR_LOCATION_* 注入不同坐标,模拟不同位置的机库。
+#   默认值(成都 30.6708,104.0715)三实例相同,做距离选库验证前必须改成不同位置,
+#   建议相距数公里,否则推荐结果没有区分度。
+#
 # Volume 分配:
 #   config: 每个实例独立(持久化各自的唯一 SN、机场位置、媒体目录等)
 #   media/videos: 共享同一份素材(所有实例可复用相同的照片/视频文件)
 #
 # 扩展实例:
-#   复制 simulator-1 配置,修改端口/volume 名称即可(唯一 SN 自动生成,无需配置)
+#   复制 simulator-1 配置,修改端口/volume 名称/坐标即可(唯一 SN 自动生成,无需配置)
 # ========================================
 
 services:
@@ -71,25 +85,34 @@ services:
   # 模拟器实例 1
   # ========================================
   simulator-1:
-    image: dock-simulator-simulator
+    # 镜像名跟随 compose 项目名:本仓库以 hivemind-simulator 为项目名构建,镜像为
+    # hivemind-simulator-simulator:latest。若你改了项目名/镜像 tag,同步修改此处。
+    image: hivemind-simulator-simulator:latest
     container_name: dji-dock-simulator-1
     ports:
       - "9090:9090"
     environment:
-      MQTT_HOST: uas-emqx
+      # Broker 默认走宿主机回环(Docker Desktop / Linux 均可用),不依赖外部网络存在。
+      # 平台 MQTT 在同机 Docker 时,填宿主机 IP 或 platform-net 里的容器名均可。
+      MQTT_HOST: host.docker.internal
       MQTT_PORT: 1883
-      MQTT_USERNAME: dji_uas_admin
-      MQTT_PASSWORD: Dji@Mqtt2024!Secure
+      MQTT_USERNAME: ${SIMULATOR_MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${SIMULATOR_MQTT_PASSWORD:-}
       SERVER_PORT: 9090
       LOGGING_LEVEL_LTD_CDMI_HIVEMIND_SIMULATOR: DEBUG
       SIMULATOR_CONFIG_DIR: /app/config
       # 唯一 SN 模式(对应 simulator.sn.unique-enabled):生成并持久化实例唯一 SN
       SIMULATOR_SN_UNIQUEENABLED: "true"
+      # 机库坐标:三实例必须拉开,距离选库才有区分度(示例:成都三处相距数公里)
+      SIMULATOR_LOCATION_LATITUDE: "30.670815"
+      SIMULATOR_LOCATION_LONGITUDE: "104.071523"
+      SIMULATOR_LOCATION_HEIGHT: "500.0"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # platform-net 为 external 网络,不存在时 compose up 会直接失败。
+    # 需要直连平台容器时,先创建网络再取消注释(见文件末尾说明)。
     networks:
       - simulator-net
-      - platform-net
     volumes:
       - simulator-config-1:/app/config
       - simulator-media:/app/media
@@ -105,25 +128,28 @@ services:
   # 模拟器实例 2
   # ========================================
   simulator-2:
-    image: dock-simulator-simulator
+    image: hivemind-simulator-simulator:latest
     container_name: dji-dock-simulator-2
     ports:
       - "9091:9090"
     environment:
-      MQTT_HOST: uas-emqx
+      MQTT_HOST: host.docker.internal
       MQTT_PORT: 1883
-      MQTT_USERNAME: dji_uas_admin
-      MQTT_PASSWORD: Dji@Mqtt2024!Secure
+      MQTT_USERNAME: ${SIMULATOR_MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${SIMULATOR_MQTT_PASSWORD:-}
       SERVER_PORT: 9090
       LOGGING_LEVEL_LTD_CDMI_HIVEMIND_SIMULATOR: DEBUG
       SIMULATOR_CONFIG_DIR: /app/config
       # 唯一 SN 模式(对应 simulator.sn.unique-enabled):生成并持久化实例唯一 SN
       SIMULATOR_SN_UNIQUEENABLED: "true"
+      # 机库 2 坐标(与机库 1 相距约 6 km)
+      SIMULATOR_LOCATION_LATITUDE: "30.625000"
+      SIMULATOR_LOCATION_LONGITUDE: "104.071523"
+      SIMULATOR_LOCATION_HEIGHT: "500.0"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - simulator-net
-      - platform-net
     volumes:
       - simulator-config-2:/app/config
       - simulator-media:/app/media
@@ -139,25 +165,28 @@ services:
   # 模拟器实例 3
   # ========================================
   simulator-3:
-    image: dock-simulator-simulator
+    image: hivemind-simulator-simulator:latest
     container_name: dji-dock-simulator-3
     ports:
       - "9092:9090"
     environment:
-      MQTT_HOST: uas-emqx
+      MQTT_HOST: host.docker.internal
       MQTT_PORT: 1883
-      MQTT_USERNAME: dji_uas_admin
-      MQTT_PASSWORD: Dji@Mqtt2024!Secure
+      MQTT_USERNAME: ${SIMULATOR_MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${SIMULATOR_MQTT_PASSWORD:-}
       SERVER_PORT: 9090
       LOGGING_LEVEL_LTD_CDMI_HIVEMIND_SIMULATOR: DEBUG
       SIMULATOR_CONFIG_DIR: /app/config
       # 唯一 SN 模式(对应 simulator.sn.unique-enabled):生成并持久化实例唯一 SN
       SIMULATOR_SN_UNIQUEENABLED: "true"
+      # 机库 3 坐标(与机库 1 相距约 10 km,便于验证"最近机库"推荐)
+      SIMULATOR_LOCATION_LATITUDE: "30.670815"
+      SIMULATOR_LOCATION_LONGITUDE: "104.180000"
+      SIMULATOR_LOCATION_HEIGHT: "500.0"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - simulator-net
-      - platform-net
     volumes:
       - simulator-config-3:/app/config
       - simulator-media:/app/media
@@ -189,8 +218,17 @@ volumes:
 networks:
   simulator-net:
     driver: bridge
-  # 同机 Docker 部署的第三方平台容器网络(external:须已存在)
-  # 对接 hivemind:接入 uas-network,通过容器名 uas-emqx:1883 直连 EMQX
-  platform-net:
-    external: true
-    name: uas-network
+  # ========================================
+  # 直连平台容器网络(可选,默认不启用)
+  # ========================================
+  # 默认编排只走 host.docker.internal,不依赖任何外部网络,能直接跑起来。
+  # 若希望实例通过容器名直连平台 Broker(避免宿主机回环在部分环境下不通),
+  # 按下面两步操作:
+  #   1. 确认平台网络名:docker network ls | grep -E "backend|uas"
+  #      - hivemind 私有化部署常见为 uas-network
+  #      - 本机 uav-platform 实测为 backend_backend
+  #   2. 把该网络名填到下面的 name,并给每个 simulator 的 networks 加回 platform-net
+  #
+  # platform-net:
+  #   external: true
+  #   name: backend_backend

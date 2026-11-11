@@ -386,6 +386,47 @@
         .dock-tabs .right-card { margin-bottom: 12px; }
         .dock-tabs .right-card:last-child { margin-bottom: 0; }
 
+        /* ===== 机库群管理面板 ===== */
+        .fleet-manager { display: flex; flex-direction: column; gap: 10px; }
+        .fleet-summary { display: flex; align-items: center; gap: 20px; padding: 10px 14px;
+                         background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; }
+        .fleet-summary-item { display: flex; flex-direction: column; gap: 2px; }
+        .fleet-summary-label { font-size: 11px; color: #64748b; }
+        .fleet-summary-value { font-size: 18px; font-weight: 700; color: #0f172a; }
+        .fleet-summary-spacer { flex: 1; }
+        .fleet-refresh-hint { font-size: 11px; color: #94a3b8; }
+        .fleet-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .fleet-toolbar-spacer { flex: 1; }
+        .fleet-selection-hint { font-size: 12px; color: #409eff; }
+        .fleet-name { font-weight: 600; color: #0f172a; }
+        .fleet-sub { font-size: 11px; color: #94a3b8; line-height: 1.5; }
+        .fleet-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+        .fleet-row-unreachable { opacity: 0.55; }
+        .fleet-empty-tip { padding: 24px; text-align: center; color: #94a3b8; font-size: 13px;
+                           border: 1px dashed #e2e8f0; border-radius: 6px; }
+        .fleet-path-tip { font-size: 11px; color: #94a3b8; word-break: break-all; }
+        .fleet-form-hint { font-size: 11px; color: #94a3b8; line-height: 1.5; margin-top: 2px; }
+        .fleet-batch-result { padding: 10px 12px; background: #f8fafc; border: 1px solid #e2e8f0;
+                              border-radius: 6px; max-height: 180px; overflow-y: auto; }
+        .fleet-batch-title { font-size: 12px; font-weight: 600; margin-bottom: 6px; color: #0f172a; }
+        .fleet-batch-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.7; }
+        .fleet-batch-name { min-width: 120px; color: #334155; }
+        .fleet-batch-msg { color: #64748b; }
+        .fleet-compose-text textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                                       font-size: 12px; line-height: 1.5; }
+        .fleet-bringup-params { padding: 10px 12px; background: #f8fafc; border: 1px solid #e2e8f0;
+                                border-radius: 6px; }
+        .fleet-bringup-params .el-form-item { margin-bottom: 6px; }
+        .fleet-bringup-item { border-bottom: 1px dashed #e2e8f0; padding: 6px 0; }
+        .fleet-bringup-item:last-child { border-bottom: none; }
+        .fleet-bringup-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+        .fleet-bringup-step { display: flex; align-items: baseline; gap: 8px; font-size: 12px;
+                              line-height: 1.7; padding-left: 8px; }
+        .fleet-bringup-step-label { min-width: 92px; color: #334155; }
+        .fleet-bringup-step-detail { color: #64748b; }
+        .fleet-seed-skipped { padding: 8px 10px; background: #fdf6ec; border: 1px solid #faecd8;
+                              border-radius: 6px; margin-bottom: 10px; }
+
         /* ===== MQTT 消息详情抽屉 ===== */
         .msg-detail-drawer .el-drawer__body {
             display: flex;
@@ -490,6 +531,7 @@
             <el-button type="primary" size="small" @click="openRegisterDialog" :disabled="!powered">注册到第三方平台</el-button>
             <el-button size="small" @click="showDiagnosticDialog = true">诊断日志</el-button>
             <el-button size="small" @click="openCoverageDialog">覆盖率报告</el-button>
+            <el-button size="small" @click="showFleetDialog = true">机库管理</el-button>
             <a href="/monitor.html" class="nav-link">调试器</a>
         </div>
     </div>
@@ -703,6 +745,11 @@
         <div v-if="diagnosticLogs.length === 0" style="text-align: center; padding: 20px; color: #94a3b8;">
             暂无诊断日志
         </div>
+    </el-dialog>
+
+    <!-- 机库群管理弹窗（多机库配置/管理/创建，不改变本页既有单设备行为） -->
+    <el-dialog v-model="showFleetDialog" title="机库管理（多机库 / 遥控器）" width="1180px" top="4vh" destroy-on-close>
+        <fleet-manager></fleet-manager>
     </el-dialog>
 
     <!-- 覆盖率报告 弹窗 -->
@@ -982,6 +1029,7 @@
 <script src="/panels/pilot-cloud.js"></script>
 <script src="/panels/pilot-config.js"></script>
 <script src="/panels/pilot-jsbridge-tabs.js"></script>
+<script src="/panels/fleet-manager.js"></script>
 <script>
 const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick, watch, provide, inject } = Vue;
 
@@ -1058,6 +1106,9 @@ const app = createApp({
         const showDiagnosticDialog = ref(false);
         const diagnosticLogs = ref([]);
         const diagnosticFilter = ref('all');
+
+        // 机库群管理（多机库清单/状态/批量操作，独立于本页单设备状态）
+        const showFleetDialog = ref(false);
 
         // 覆盖率报告
         const showCoverageDialog = ref(false);
@@ -2652,6 +2703,7 @@ const app = createApp({
         // 外壳模板（标题栏/日志区/公共弹窗）需要的共享项；Dock 专属项已迁移到 dock-panel.js
         return { mqttConnected, online, powered, mqttError, state, editState, task, streams, media, logs,
                  connConfig, connecting, deviceInfo, showRegisterDialog, licenseLocked, resetLicenseLock, showDeviceInfoDialog,
+                 showFleetDialog,
                  snForm, resetSnField, openRegisterDialog,
                  gatewayName, droneName, droneStatus, droneTagType,
                  logFilter, autoScroll, logContainer, topicFilter, topicOptions, searchKeyword,
@@ -2690,6 +2742,7 @@ registerPilotLivePanel(app);
 registerPilotCloudPanel(app);
 registerPilotConfigPanel(app);
 registerPilotJsbridgeTabsPanel(app);
+registerFleetManagerPanel(app);
 app.mount('#app');
 // Vue 挂载完成，移除加载占位
 document.getElementById('app-loading')?.remove();
