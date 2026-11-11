@@ -42,6 +42,7 @@ import ltd.cdmi.hivemind.simulator.device.DeviceState;
 import ltd.cdmi.dji.cloudapi.sdk.model.DockModel;
 import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticCode;
 import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticLogRecorder;
+import ltd.cdmi.hivemind.simulator.media.CaptureSnapshot;
 import ltd.cdmi.hivemind.simulator.mqtt.DockTopicSchema;
 import ltd.cdmi.hivemind.simulator.mqtt.MqttClientManager;
 import ltd.cdmi.hivemind.simulator.wayline.WaylineFlightEngine;
@@ -51,6 +52,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -59,6 +62,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -93,6 +97,10 @@ public class WaylineTaskSimulator {
 
     /** 返航飞行模拟延迟（秒）：return_home 后延迟更新位置到机场，使平台可观察 mode_code=9 → 0 过渡 */
     private static final long RETURN_HOME_DELAY_SECONDS = 5;
+
+    /** 拍摄时间格式：ISO 8601（官方 file_upload_callback metadata.create_time 定义） */
+    private static final DateTimeFormatter CAPTURE_TIME_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     /**
      * Dock1 任务执行步骤序列（current_step 枚举按 Dock1 wayline.html）。
@@ -197,6 +205,11 @@ public class WaylineTaskSimulator {
     private volatile double targetLongitude;
     private volatile double targetHeight;
     private volatile boolean hasTarget;
+
+    /** 当前任务已拍摄的媒体（航点 takePhoto 动作按拍摄瞬间遥测生成） */
+    private final List<CaptureSnapshot> capturedMedia = new CopyOnWriteArrayList<>();
+    /** 已通过空中回传（air_transfer_enable）上传的媒体，落地后不再重复上传 */
+    private final List<CaptureSnapshot> airTransferredMedia = new CopyOnWriteArrayList<>();
 
     /** 当前任务信息 */
     private volatile String currentFlightId;
@@ -907,7 +920,9 @@ public class WaylineTaskSimulator {
         stopRouteTask();
         ScheduledFuture<?> task = scheduler.scheduleAtFixedRate(() -> {
             try {
-                if (routeEngine.tick()) {
+                boolean finished = routeEngine.tick();
+                captureReachedActions();
+                if (finished) {
                     currentStepIndex = STEP_PERCENTS.length - 1;
                     publishProgress("ok", currentStepIndex, 100);
                     completeTask();
@@ -917,6 +932,50 @@ public class WaylineTaskSimulator {
             }
         }, 0, INTERP_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
         routeTask.set(task);
+    }
+
+    /**
+     * 执行航线到达的拍照动作（TC-WAYLINE-028）。
+     * <p>每到达一个带 {@code takePhoto} 动作的航点，按拍摄瞬间的遥测生成一条媒体记录。
+     * <p>上传时机对齐真机 {@code air_transfer_enable}：开启（默认）时照片在飞行过程中快速回传，
+     * 因此在拍照后立即异步上传该张媒体；关闭时媒体先存机内，任务落地后按优先级批量上传。
+     * <p>非 takePhoto 动作（云台转动、悬停、录像等）仅记录日志，不做执行模拟。
+     */
+    private void captureReachedActions() {
+        List<WaylinePlan.WaypointAction> actions = routeEngine.drainReachedActions();
+        if (actions.isEmpty()) {
+            return;
+        }
+        for (WaylinePlan.WaypointAction action : actions) {
+            if (!"takePhoto".equalsIgnoreCase(action.actionActuatorFunc())) {
+                log.debug("航线动作（未模拟执行）: func={}, waypoint={}", action.actionActuatorFunc(),
+                        action.waypointIndex());
+                continue;
+            }
+            CaptureSnapshot snapshot = new CaptureSnapshot(
+                    state.getDroneLatitude(),
+                    state.getDroneLongitude(),
+                    state.getDroneElevation(),
+                    state.getDroneHeight(),
+                    state.getGimbalYaw(),
+                    LocalDateTime.now().format(CAPTURE_TIME_FORMAT),
+                    action.fileSuffix(),
+                    action.payloadPositionIndex());
+            capturedMedia.add(snapshot);
+            state.setRemainPhotoNum(Math.max(0, state.getRemainPhotoNum() - 1));
+            log.info("航点拍照: flightId={}, waypoint={}, lat={}, lng={}, alt={}, yaw={}, suffix={}",
+                    currentFlightId, action.waypointIndex(), snapshot.latitude(),
+                    snapshot.longitude(), snapshot.relativeAltitude(),
+                    snapshot.gimbalYawDegree(), action.fileSuffix());
+
+            // 空中回传：拍照后立即异步上传该张（不阻塞航线调度线程）
+            if (state.isAirTransferEnable() && currentFlightId != null) {
+                airTransferredMedia.add(snapshot);
+                String flightId = currentFlightId;
+                CompletableFuture.runAsync(() ->
+                        mediaUploadSimulator.simulateMediaUpload(flightId, List.of(snapshot)));
+            }
+        }
     }
 
     private void stopRouteTask() {
@@ -1011,6 +1070,8 @@ public class WaylineTaskSimulator {
     private void completeTask() {
         stopProgressTask();
         stopRouteTask();
+        // 排空最后一个 tick 内到达的航点动作（任务结束前完成最后一张拍摄）
+        captureReachedActions();
         routeEngine.stop();
         stopInterpolation();  // TC-WAYLINE-026：任务完成停止插值
 
@@ -1021,12 +1082,28 @@ public class WaylineTaskSimulator {
         publishReturnHomeInfo();
 
         String finishedFlightId = currentFlightId;
+        List<CaptureSnapshot> captured = List.copyOf(capturedMedia);
+        List<CaptureSnapshot> pending = captured.stream()
+                .filter(snapshot -> !airTransferredMedia.contains(snapshot))
+                .toList();
         resetTaskState();
         log.info("任务完成: flightId={}", finishedFlightId);
 
         // 触发媒体上传（使用 ForkJoinPool 异步执行，不阻塞 wayline-scheduler 线程池）
+        // 严格对齐真机：只有确实拍摄过的媒体才上传；空中回传已发出的不再重复上传。
+        // 航线无 takePhoto 动作时不产生媒体（真机同样不会凭空上报文件）。
         if (finishedFlightId != null) {
-            CompletableFuture.runAsync(() -> mediaUploadSimulator.simulateMediaUpload(finishedFlightId, 3));
+            if (pending.isEmpty()) {
+                if (captured.isEmpty()) {
+                    log.info("航线无拍照动作，不产生媒体文件: flightId={}", finishedFlightId);
+                } else {
+                    log.info("媒体已通过空中回传上传，落地后无需重复上传: flightId={}", finishedFlightId);
+                }
+                return;
+            }
+            CompletableFuture.runAsync(() ->
+                    // 航点拍照：严格按真机行为，仅对成功落盘的文件回调
+                    mediaUploadSimulator.simulateMediaUpload(finishedFlightId, pending));
         }
     }
 
@@ -1232,6 +1309,8 @@ public class WaylineTaskSimulator {
      */
     private void resetTaskState() {
         routeEngine.clear();
+        capturedMedia.clear();
+        airTransferredMedia.clear();
         currentFlightId = null;
         currentTrackId = null;
         currentTaskBid = null;
@@ -1284,7 +1363,7 @@ public class WaylineTaskSimulator {
         ext.put("current_waypoint_index", routeEngine.hasPlan()
                 ? routeEngine.waypointIndex() : stepIndex * 2);
         ext.put("flight_id", currentFlightId != null ? currentFlightId : "");
-        ext.put("media_count", stepIndex);
+        ext.put("media_count", capturedMedia.size());
         ext.put("track_id", currentTrackId != null ? currentTrackId : "");
         ext.put("wayline_id", 0);
         ext.put("wayline_mission_state", "in_progress".equals(status) ? 6 : 9);

@@ -3,7 +3,12 @@ package ltd.cdmi.hivemind.simulator.wayline;
 
 import ltd.cdmi.hivemind.simulator.device.DeviceState;
 import ltd.cdmi.hivemind.simulator.wayline.WaylinePlan.Segment;
+import ltd.cdmi.hivemind.simulator.wayline.WaylinePlan.WaypointAction;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
 import java.util.function.LongSupplier;
 
 /** Advances a parsed wayline against monotonic time and writes telemetry to DeviceState. */
@@ -24,6 +29,10 @@ public class WaylineFlightEngine {
     private double lastElapsedSeconds;
     private double batteryPercent;
     private int waypointIndex = -1;
+    /** Actions reached but not yet drained by the caller, in route order. */
+    private final Deque<WaypointAction> pendingActions = new ArrayDeque<>();
+    /** Cursor into {@code plan.actions()} (sorted by trigger time); actions before it fired. */
+    private int nextActionIndex;
 
     public WaylineFlightEngine(DeviceState state, double homeLatitude,
                                double homeLongitude, double homeElevation) {
@@ -45,6 +54,8 @@ public class WaylineFlightEngine {
         elapsedSeconds = 0.0;
         lastElapsedSeconds = 0.0;
         waypointIndex = -1;
+        pendingActions.clear();
+        nextActionIndex = 0;
     }
 
     public synchronized boolean hasPlan() {
@@ -61,9 +72,30 @@ public class WaylineFlightEngine {
         lastElapsedSeconds = 0.0;
         batteryPercent = state.getBatteryPercent();
         waypointIndex = -1;
+        pendingActions.clear();
+        nextActionIndex = 0;
         state.setCurrentTrackId(trackId == null ? "" : trackId);
         state.setRouteTelemetryActive(true);
         apply(0.0);
+    }
+
+    /**
+     * Return and clear the actions whose waypoint has been reached since the last drain.
+     * <p>The scheduler drains after every {@link #tick()}; a caller that renders the returned
+     * actions is responsible for executing them (e.g. taking a photo).
+     */
+    public synchronized List<WaypointAction> drainReachedActions() {
+        if (pendingActions.isEmpty()) {
+            return List.of();
+        }
+        List<WaypointAction> actions = new ArrayList<>(pendingActions);
+        pendingActions.clear();
+        return actions;
+    }
+
+    /** Actions reached but not yet drained (test/observability helper). */
+    public synchronized int pendingActionCount() {
+        return pendingActions.size();
     }
 
     public synchronized void pause() {
@@ -98,6 +130,8 @@ public class WaylineFlightEngine {
         elapsedSeconds = 0.0;
         lastElapsedSeconds = 0.0;
         waypointIndex = -1;
+        pendingActions.clear();
+        nextActionIndex = 0;
     }
 
     /** Returns true when the route reached its final point during this tick. */
@@ -145,6 +179,7 @@ public class WaylineFlightEngine {
         state.setRemainingFlightTimeSeconds(Math.max(0L, Math.round(plan.totalDuration() - elapsed)));
         state.setFlightTimeSeconds(Math.max(0L, Math.round(elapsed)));
         waypointIndex = ratio <= 0.000001 ? segment.start().index() : segment.end().index();
+        collectReachedActions(elapsed);
 
         double delta = Math.max(0.0, elapsed - lastElapsedSeconds);
         if (delta > 0.0) {
@@ -152,6 +187,21 @@ public class WaylineFlightEngine {
             state.setBatteryPercent((int) Math.round(batteryPercent));
         }
         lastElapsedSeconds = elapsed;
+    }
+
+    /**
+     * Queue actions whose trigger time has been reached.
+     * <p>Trigger time equals the route time at which the aircraft arrives at the waypoint,
+     * so a flight that overshoots (e.g. one 0.5 s tick spanning several waypoints) still
+     * fires every intermediate action exactly once, in route order.
+     */
+    private void collectReachedActions(double elapsed) {
+        List<WaypointAction> actions = plan.actions();
+        while (nextActionIndex < actions.size()
+                && actions.get(nextActionIndex).triggerTime() <= elapsed) {
+            pendingActions.addLast(actions.get(nextActionIndex));
+            nextActionIndex++;
+        }
     }
 
     public synchronized Status status() { return status; }

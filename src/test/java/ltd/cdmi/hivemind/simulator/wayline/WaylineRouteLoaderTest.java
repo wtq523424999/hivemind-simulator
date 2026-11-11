@@ -75,6 +75,152 @@ class WaylineRouteLoaderTest {
         }
     }
 
+    @Test
+    void parsesReachPointTakePhotoActions() throws Exception {
+        String wpml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="http://www.dji.com/wpmz/1.0.6">
+                  <Document>
+                    <wpml:missionConfig>
+                      <wpml:finishAction>noAction</wpml:finishAction>
+                      <wpml:globalTransitionalSpeed>5</wpml:globalTransitionalSpeed>
+                    </wpml:missionConfig>
+                    <Folder>
+                      <wpml:executeHeightMode>relativeToStartPoint</wpml:executeHeightMode>
+                      <wpml:autoFlightSpeed>10</wpml:autoFlightSpeed>
+                      <Placemark><Point><coordinates>104.001,30.0</coordinates></Point>
+                        <wpml:index>0</wpml:index><wpml:executeHeight>30</wpml:executeHeight>
+                        <wpml:waypointSpeed>10</wpml:waypointSpeed>
+                        <wpml:actionGroup>
+                          <wpml:actionGroupId>0</wpml:actionGroupId>
+                          <wpml:actionGroupStartIndex>0</wpml:actionGroupStartIndex>
+                          <wpml:actionGroupEndIndex>0</wpml:actionGroupEndIndex>
+                          <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
+                          <wpml:actionTrigger><wpml:actionTriggerType>reachPoint</wpml:actionTriggerType></wpml:actionTrigger>
+                          <wpml:action>
+                            <wpml:actionId>1</wpml:actionId>
+                            <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
+                            <wpml:actionActuatorFuncParam>
+                              <wpml:fileSuffix>point1</wpml:fileSuffix>
+                              <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+                            </wpml:actionActuatorFuncParam>
+                          </wpml:action>
+                        </wpml:actionGroup>
+                      </Placemark>
+                      <Placemark><Point><coordinates>104.002,30.0</coordinates></Point>
+                        <wpml:index>1</wpml:index><wpml:executeHeight>30</wpml:executeHeight>
+                        <wpml:waypointSpeed>10</wpml:waypointSpeed>
+                        <wpml:actionGroup>
+                          <wpml:actionGroupStartIndex>1</wpml:actionGroupStartIndex>
+                          <wpml:actionGroupEndIndex>1</wpml:actionGroupEndIndex>
+                          <wpml:actionGroupMode>sequence</wpml:actionGroupMode>
+                          <wpml:actionTrigger><wpml:actionTriggerType>reachPoint</wpml:actionTriggerType></wpml:actionTrigger>
+                          <wpml:action>
+                            <wpml:actionId>2</wpml:actionId>
+                            <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
+                            <wpml:actionActuatorFuncParam>
+                              <wpml:fileSuffix>point2</wpml:fileSuffix>
+                              <wpml:payloadPositionIndex>0</wpml:payloadPositionIndex>
+                            </wpml:actionActuatorFuncParam>
+                          </wpml:action>
+                        </wpml:actionGroup>
+                      </Placemark>
+                    </Folder>
+                  </Document>
+                </kml>
+                """;
+
+        WaylinePlan plan = new WaylineRouteLoader().parse(kmz(wpml), "memory.kmz",
+                30.0, 104.0, 500.0);
+
+        assertEquals(2, plan.takePhotoCount());
+        assertTrue(plan.hasTakePhotoActions());
+        // 起点（机场）→ 航点 1 → 航点 2，两段组成
+        assertEquals(2, plan.actions().size());
+        assertEquals(0, plan.actions().get(0).waypointIndex());
+        assertEquals("point1", plan.actions().get(0).fileSuffix());
+        assertEquals("takePhoto", plan.actions().get(0).actionActuatorFunc());
+        assertEquals(1, plan.actions().get(1).waypointIndex());
+        assertEquals("point2", plan.actions().get(1).fileSuffix());
+        // 到达时间落在对应航段的结束时刻
+        assertTrue(plan.actions().get(0).triggerTime() > 0.0);
+        assertTrue(plan.actions().get(1).triggerTime() > plan.actions().get(0).triggerTime());
+        // 第一个触发时间应等于第 0 段的时长（机场→航点0）
+        assertEquals(plan.segments().get(0).duration(), plan.actions().get(0).triggerTime(), 1e-9);
+    }
+
+    @Test
+    void ignoresNonReachPointActionGroups() throws Exception {
+        String wpml = """
+                <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="http://www.dji.com/wpmz/1.0.6">
+                  <Document><Folder>
+                    <wpml:executeHeightMode>relativeToStartPoint</wpml:executeHeightMode>
+                    <Placemark><Point><coordinates>104.001,30.0</coordinates></Point>
+                      <wpml:index>0</wpml:index><wpml:executeHeight>30</wpml:executeHeight>
+                      <wpml:actionGroup>
+                        <wpml:actionGroupStartIndex>0</wpml:actionGroupStartIndex>
+                        <wpml:actionGroupEndIndex>0</wpml:actionGroupEndIndex>
+                        <wpml:actionTrigger><wpml:actionTriggerType>multipleTiming</wpml:actionTriggerType></wpml:actionTrigger>
+                        <wpml:action>
+                          <wpml:actionId>0</wpml:actionId>
+                          <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
+                          <wpml:actionActuatorFuncParam><wpml:fileSuffix>p</wpml:fileSuffix></wpml:actionActuatorFuncParam>
+                        </wpml:action>
+                      </wpml:actionGroup>
+                    </Placemark>
+                  </Folder></Document>
+                </kml>
+                """;
+
+        WaylinePlan plan = new WaylineRouteLoader().parse(kmz(wpml), "memory.kmz", 30.0, 104.0, 500.0);
+
+        assertTrue(plan.actions().isEmpty(), "非 reachPoint 触发类型当前不建模，应忽略");
+        assertFalse(plan.hasTakePhotoActions());
+    }
+
+    @Test
+    void parsesMultipleActionsInOneGroupInOrder() throws Exception {
+        String wpml = """
+                <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:wpml="http://www.dji.com/wpmz/1.0.6">
+                  <Document><Folder>
+                    <wpml:executeHeightMode>relativeToStartPoint</wpml:executeHeightMode>
+                    <Placemark><Point><coordinates>104.001,30.0</coordinates></Point>
+                      <wpml:index>0</wpml:index><wpml:executeHeight>30</wpml:executeHeight>
+                      <wpml:actionGroup>
+                        <wpml:actionGroupStartIndex>0</wpml:actionGroupStartIndex>
+                        <wpml:actionGroupEndIndex>0</wpml:actionGroupEndIndex>
+                        <wpml:actionTrigger><wpml:actionTriggerType>reachPoint</wpml:actionTriggerType></wpml:actionTrigger>
+                        <wpml:action>
+                          <wpml:actionId>0</wpml:actionId>
+                          <wpml:actionActuatorFunc>gimbalRotate</wpml:actionActuatorFunc>
+                          <wpml:actionActuatorFuncParam><wpml:payloadPositionIndex>0</wpml:payloadPositionIndex></wpml:actionActuatorFuncParam>
+                        </wpml:action>
+                        <wpml:action>
+                          <wpml:actionId>1</wpml:actionId>
+                          <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
+                          <wpml:actionActuatorFuncParam><wpml:fileSuffix>a</wpml:fileSuffix></wpml:actionActuatorFuncParam>
+                        </wpml:action>
+                        <wpml:action>
+                          <wpml:actionId>2</wpml:actionId>
+                          <wpml:actionActuatorFunc>takePhoto</wpml:actionActuatorFunc>
+                          <wpml:actionActuatorFuncParam><wpml:fileSuffix>b</wpml:fileSuffix></wpml:actionActuatorFuncParam>
+                        </wpml:action>
+                      </wpml:actionGroup>
+                    </Placemark>
+                  </Folder></Document>
+                </kml>
+                """;
+
+        WaylinePlan plan = new WaylineRouteLoader().parse(kmz(wpml), "memory.kmz", 30.0, 104.0, 500.0);
+
+        assertEquals(3, plan.actions().size());
+        assertEquals(2, plan.takePhotoCount());
+        assertEquals(3, plan.actionsAt(0).size(), "同一航点的 3 个动作按 actionId 顺序返回");
+        assertEquals("gimbalRotate", plan.actionsAt(0).get(0).actionActuatorFunc());
+        assertEquals("a", plan.actionsAt(0).get(1).fileSuffix());
+        assertEquals("b", plan.actionsAt(0).get(2).fileSuffix());
+    }
+
     private static byte[] kmz(String wpml) throws Exception {
         return zipEntry("wpmz/waylines.wpml", wpml);
     }

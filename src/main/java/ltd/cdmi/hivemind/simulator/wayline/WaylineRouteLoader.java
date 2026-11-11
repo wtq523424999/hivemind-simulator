@@ -3,6 +3,7 @@ package ltd.cdmi.hivemind.simulator.wayline;
 
 import ltd.cdmi.hivemind.simulator.wayline.WaylinePlan.Segment;
 import ltd.cdmi.hivemind.simulator.wayline.WaylinePlan.Waypoint;
+import ltd.cdmi.hivemind.simulator.wayline.WaylinePlan.WaypointAction;
 
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamConstants;
@@ -21,8 +22,10 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -99,8 +102,39 @@ public class WaylineRouteLoader {
             totalTime += duration;
             totalDistance += distance;
         }
+        List<WaypointAction> actions = resolveActionTriggerTimes(parsed.actions, segments);
         return new WaylinePlan(source, waypoints, segments, totalDistance, totalTime,
-                parsed.transitionalSpeed, parsed.finishAction, parsed.takeoffSecurityHeight);
+                parsed.transitionalSpeed, parsed.finishAction, parsed.takeoffSecurityHeight, actions);
+    }
+
+    /**
+     * Resolve each parsed action's route time from the segment that ends at its waypoint.
+     * <p>A {@code reachPoint} action fires when the aircraft arrives at the waypoint, i.e. at
+     * the end time of the segment whose {@code end.index()} matches the action's waypoint index.
+     * Actions whose waypoint is absent from the route are dropped.
+     */
+    private static List<WaypointAction> resolveActionTriggerTimes(List<ParsedAction> parsedActions,
+                                                                  List<Segment> segments) {
+        if (parsedActions.isEmpty()) {
+            return List.of();
+        }
+        Map<Integer, Double> arrivalTimes = new HashMap<>();
+        for (Segment segment : segments) {
+            arrivalTimes.putIfAbsent(segment.end().index(), segment.startTime() + segment.duration());
+        }
+        List<WaypointAction> resolved = new ArrayList<>();
+        for (ParsedAction action : parsedActions) {
+            Double triggerTime = arrivalTimes.get(action.waypointIndex());
+            if (triggerTime == null) {
+                continue;
+            }
+            resolved.add(new WaypointAction(action.waypointIndex(), action.actionId(),
+                    action.actionActuatorFunc(), action.fileSuffix(),
+                    action.payloadPositionIndex(), triggerTime));
+        }
+        resolved.sort(Comparator.comparingDouble(WaypointAction::triggerTime)
+                .thenComparingInt(WaypointAction::actionId));
+        return resolved;
     }
 
     private byte[] readSource(String source) throws IOException, InterruptedException {
@@ -173,7 +207,12 @@ public class WaylineRouteLoader {
         String finishAction = "noAction";
         String globalHeightMode = "relativeToStartPoint";
         List<Waypoint> waypoints = new ArrayList<>();
+        List<ParsedAction> actions = new ArrayList<>();
         PlacemarkBuilder placemark = null;
+        ActionGroupBuilder actionGroup = null;
+        ActionBuilder action = null;
+        // Element name of the innermost element that has character data; cleared at END_ELEMENT
+        // so text of a nested element is never attributed to its parent (e.g. actionTriggerType).
         String currentElement = null;
         try {
             XMLStreamReader reader = factory.createXMLStreamReader(new ByteArrayInputStream(xml));
@@ -181,8 +220,19 @@ public class WaylineRouteLoader {
                 int event = reader.next();
                 if (event == XMLStreamConstants.START_ELEMENT) {
                     currentElement = reader.getLocalName();
-                    if ("Placemark".equals(currentElement)) {
-                        placemark = new PlacemarkBuilder(waypoints.size());
+                    switch (currentElement) {
+                        case "Placemark" -> placemark = new PlacemarkBuilder(waypoints.size());
+                        case "actionGroup" -> {
+                            if (placemark != null) {
+                                actionGroup = new ActionGroupBuilder();
+                            }
+                        }
+                        case "action" -> {
+                            if (actionGroup != null) {
+                                action = new ActionBuilder();
+                            }
+                        }
+                        default -> { }
                     }
                 } else if ((event == XMLStreamConstants.CHARACTERS || event == XMLStreamConstants.CDATA)
                         && !reader.isWhiteSpace() && currentElement != null) {
@@ -190,7 +240,11 @@ public class WaylineRouteLoader {
                     if (value.isEmpty()) {
                         continue;
                     }
-                    if (placemark != null) {
+                    if (action != null) {
+                        action.accept(currentElement, value);
+                    } else if (actionGroup != null) {
+                        actionGroup.accept(currentElement, value);
+                    } else if (placemark != null) {
                         placemark.accept(currentElement, value);
                     } else {
                         switch (currentElement) {
@@ -204,12 +258,30 @@ public class WaylineRouteLoader {
                     }
                 } else if (event == XMLStreamConstants.END_ELEMENT) {
                     String name = reader.getLocalName();
-                    if ("Placemark".equals(name) && placemark != null) {
-                        Waypoint waypoint = placemark.build(autoFlightSpeed, globalHeightMode);
-                        if (waypoint != null) {
-                            waypoints.add(waypoint);
+                    switch (name) {
+                        case "action" -> {
+                            if (action != null && actionGroup != null) {
+                                actionGroup.actions.add(action);
+                            }
+                            action = null;
                         }
-                        placemark = null;
+                        case "actionGroup" -> {
+                            if (actionGroup != null && placemark != null) {
+                                placemark.actionGroups.add(actionGroup.build());
+                            }
+                            actionGroup = null;
+                        }
+                        case "Placemark" -> {
+                            if (placemark != null) {
+                                Waypoint waypoint = placemark.build(autoFlightSpeed, globalHeightMode);
+                                if (waypoint != null) {
+                                    waypoints.add(waypoint);
+                                    actions.addAll(placemark.resolveActions(waypoint.index()));
+                                }
+                                placemark = null;
+                            }
+                        }
+                        default -> { }
                     }
                     currentElement = null;
                 }
@@ -217,7 +289,7 @@ public class WaylineRouteLoader {
         } catch (XMLStreamException | IllegalArgumentException e) {
             throw new IOException("Invalid WPML data: " + e.getMessage(), e);
         }
-        return new ParsedWpml(transitionalSpeed, finishAction, securityHeight, waypoints);
+        return new ParsedWpml(transitionalSpeed, finishAction, securityHeight, waypoints, actions);
     }
 
     private static byte[] readLimited(InputStream input, int limit) throws IOException {
@@ -264,10 +336,95 @@ public class WaylineRouteLoader {
     }
 
     private record ParsedWpml(double transitionalSpeed, String finishAction,
-                              double takeoffSecurityHeight, List<Waypoint> waypoints) {}
+                              double takeoffSecurityHeight, List<Waypoint> waypoints,
+                              List<ParsedAction> actions) {}
+
+    /** Action parsed from WPML, before trigger time is resolved against the route. */
+    private record ParsedAction(int waypointIndex, int actionId, String actionActuatorFunc,
+                                String fileSuffix, String payloadPositionIndex) {}
+
+    /**
+     * Builds actions of one {@code actionGroup}.
+     * <p>Only {@code reachPoint} groups are supported: other trigger types
+     * ({@code betweenAdjacentPoints}, {@code multipleTiming}, {@code multipleDistance})
+     * need route-time interpolation that the simulator does not model, so they are dropped.
+     */
+    private static final class ActionGroupBuilder {
+        private final List<ActionBuilder> actions = new ArrayList<>();
+        private String startIndex;
+        private String triggerType;
+
+        private void accept(String element, String value) {
+            switch (element) {
+                case "actionGroupStartIndex" -> startIndex = value;
+                case "actionTriggerType" -> triggerType = value;
+                default -> { }
+            }
+        }
+
+        private List<ParsedAction> build() {
+            if (triggerType == null || !"reachPoint".equalsIgnoreCase(triggerType)) {
+                return List.of();
+            }
+            int start = parseInt(startIndex, -1);
+            if (start < 0) {
+                return List.of();
+            }
+            // actionGroupStartIndex == actionGroupEndIndex for a single-waypoint group;
+            // a group spanning several waypoints fires its actions at the start waypoint.
+            List<ParsedAction> resolved = new ArrayList<>();
+            for (ActionBuilder action : actions) {
+                resolved.add(action.build(start));
+            }
+            return resolved;
+        }
+    }
+
+    /** Builds one {@code action} element inside a group. */
+    private static final class ActionBuilder {
+        private final int fallbackId;
+        private String actionId;
+        private String actionActuatorFunc;
+        private String fileSuffix;
+        private String payloadPositionIndex;
+
+        private ActionBuilder() {
+            this.fallbackId = 0;
+        }
+
+        private void accept(String element, String value) {
+            switch (element) {
+                case "actionId" -> actionId = value;
+                case "actionActuatorFunc" -> actionActuatorFunc = value;
+                case "fileSuffix" -> fileSuffix = value;
+                case "payloadPositionIndex" -> payloadPositionIndex = value;
+                default -> { }
+            }
+        }
+
+        private ParsedAction build(int waypointIndex) {
+            return new ParsedAction(waypointIndex,
+                    parseInt(actionId, fallbackId),
+                    actionActuatorFunc == null ? "" : actionActuatorFunc,
+                    fileSuffix == null ? "" : fileSuffix,
+                    payloadPositionIndex == null ? "0" : payloadPositionIndex);
+        }
+    }
+
+    private static int parseInt(String value, int fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
 
     private static final class PlacemarkBuilder {
         private final int fallbackIndex;
+        private final List<List<ParsedAction>> actionGroups = new ArrayList<>();
         private String coordinates;
         private String height;
         private String speed;
@@ -307,6 +464,24 @@ public class WaylineRouteLoader {
             // Relative points are resolved against home elevation after parsing.
             return new Waypoint(latitude, longitude, relative ? parsedHeight : Double.NaN,
                     parsedHeight, parsedSpeed, parsedIndex);
+        }
+
+        /**
+         * Bind this placemark's reachPoint actions to its own waypoint index.
+         * <p>The action group carries its own start index; when it disagrees with the
+         * placemark index (a group may span waypoints), the placemark index wins for
+         * this simulator since actions are executed per waypoint.
+         */
+        private List<ParsedAction> resolveActions(int waypointIndex) {
+            List<ParsedAction> resolved = new ArrayList<>();
+            for (List<ParsedAction> group : actionGroups) {
+                for (ParsedAction action : group) {
+                    resolved.add(new ParsedAction(waypointIndex, action.actionId(),
+                            action.actionActuatorFunc(), action.fileSuffix(),
+                            action.payloadPositionIndex()));
+                }
+            }
+            return resolved;
         }
     }
 }

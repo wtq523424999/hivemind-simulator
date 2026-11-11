@@ -838,7 +838,7 @@
                         {{ mediaUploading ? (mediaUploadPercent + '%') : '上传媒体' }}
                     </el-button>
                 </div>
-                <input ref="mediaFileInput" type="file" accept=".jpg,.jpeg,.png,.dng,.tif,.tiff,.mp4,.mov,.avi"
+                <input ref="mediaFileInput" type="file" accept=".jpg,.jpeg,.png,.dng,.tif,.tiff,.mp4,.mov,.avi" multiple
                        style="display: none;" @change="onMediaFileSelected"></input>
                 <el-progress v-if="mediaUploading" :percentage="mediaUploadPercent" :stroke-width="6"
                              style="width: 100%; margin-top: 6px;"></el-progress>
@@ -934,7 +934,8 @@
                 <div style="font-size: 13px; color: #606266; line-height: 1.8;">
                     <p style="margin: 4px 0;"><b>媒体上传流程：</b>航线任务完成后，模拟器自动执行 storage_config_get 获取 STS 凭证 → 从本目录读取文件上传到对象存储 → 发 file_upload_callback 通知平台。</p>
                     <p style="margin: 4px 0;"><b>支持的文件格式：</b>jpg / jpeg / png / dng / tif / tiff / mp4 / mov / avi</p>
-                    <p style="margin: 4px 0;"><b>最简方式：</b>目录为空时自动预置示例照片+视频；也可用自己的素材——本地部署直接放入目录，Docker 部署用上方「上传媒体」按钮传入（文件会循环使用）。</p>
+                    <p style="margin: 4px 0;"><b>航点拍照用哪张图：</b>优先用你自己放的<b>图片</b>（jpg/jpeg/png/dng/tif/tiff，多张按文件名顺序轮换）；目录里只有预置样例时用样例。视频不会当作照片上传。</p>
+                    <p style="margin: 4px 0;"><b>最简方式：</b>目录为空时自动预置 3 张示例照片 + 1 个示例视频；想换成自己的照片——本地部署直接放入目录，Docker 部署用上方「上传媒体」按钮传入（可一次多选）。</p>
                     <p style="margin: 4px 0; color: #e6a23c;"><b>降级策略：</b>目录留空或 STS 凭证获取失败时，仅发 file_upload_callback（元数据上报），object_key 指向不存在的文件。平台可验证 MQTT 协议但无法下载真实文件。</p>
                     <p style="margin: 4px 0; color: #67c23a;">提示：配置后无需重启，点击"保存并检测"即生效。与直播推流共享同一持久化配置。</p>
                 </div>
@@ -1679,44 +1680,63 @@ const app = createApp({
         }
 
         async function onMediaFileSelected(ev) {
-            const file = ev.target.files?.[0];
+            const files = Array.from(ev.target.files || []);
             ev.target.value = ''; // 允许重复选择同一文件
-            if (!file || mediaUploading.value) return;
+            if (!files.length || mediaUploading.value) return;
             // 上传前先保存配置，确保文件落入用户当前填写的目录（后端按已保存的 media-dir 存放）
             await saveLiveConfig();
             mediaUploading.value = true;
+            let succeeded = 0;
+            let failed = 0;
+            let lastError = '';
+            for (let i = 0; i < files.length; i++) {
+                // 每张图单独请求，进度按「已完成张数 + 当前张进度」折算，多选时进度连续
+                const result = await uploadOneMediaFile(files[i], i, files.length);
+                if (result.success) {
+                    succeeded++;
+                    if (result.mediaFiles) mediaFiles.value = result.mediaFiles;
+                } else {
+                    failed++;
+                    lastError = result.message || '上传失败';
+                }
+            }
+            mediaUploading.value = false;
             mediaUploadPercent.value = 0;
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/media/files/upload');
-            xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable) {
-                    mediaUploadPercent.value = Math.min(100, Math.round(e.loaded / e.total * 100));
-                }
-            };
-            xhr.onload = () => {
-                mediaUploading.value = false;
-                mediaUploadPercent.value = 0;
-                try {
-                    const data = JSON.parse(xhr.responseText);
-                    if (data.success) {
-                        const sizeKb = data.size ? (data.size / 1024).toFixed(0) + 'KB' : '';
-                        ElementPlus.ElMessage.success(`媒体 ${data.filename} 已加入素材池${sizeKb ? '（' + sizeKb + '）' : ''}，任务完成或「上报媒体」时上传到平台`);
-                        if (data.mediaFiles) mediaFiles.value = data.mediaFiles;
-                    } else {
-                        ElementPlus.ElMessage.error(data.message || '上传失败');
+            if (succeeded && !failed) {
+                ElementPlus.ElMessage.success(succeeded === 1
+                    ? `媒体已加入素材池，任务完成或「上报媒体」时上传到平台`
+                    : `${succeeded} 个媒体文件已加入素材池，任务完成或「上报媒体」时上传到平台`);
+            } else if (succeeded) {
+                ElementPlus.ElMessage.warning(`${succeeded} 个上传成功、${failed} 个失败：${lastError}`);
+            } else {
+                ElementPlus.ElMessage.error(lastError);
+            }
+        }
+
+        // 上传单个媒体文件，返回后端响应对象（失败时含 message）
+        function uploadOneMediaFile(file, index, total) {
+            return new Promise((resolve) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '/api/media/files/upload');
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable) {
+                        const perFile = e.loaded / e.total * 100;
+                        mediaUploadPercent.value = Math.min(100,
+                            Math.round((index + perFile / 100) / total * 100));
                     }
-                } catch (err) {
-                    ElementPlus.ElMessage.error('解析上传结果失败');
-                }
-            };
-            xhr.onerror = () => {
-                mediaUploading.value = false;
-                mediaUploadPercent.value = 0;
-                ElementPlus.ElMessage.error('上传失败（网络错误或文件超过 512MB 限制）');
-            };
-            const fd = new FormData();
-            fd.append('file', file);
-            xhr.send(fd);
+                };
+                xhr.onload = () => {
+                    try {
+                        resolve(JSON.parse(xhr.responseText));
+                    } catch (err) {
+                        resolve({ success: false, message: '解析上传结果失败' });
+                    }
+                };
+                xhr.onerror = () => resolve({ success: false, message: '上传失败（网络错误或文件超过 512MB 限制）' });
+                const fd = new FormData();
+                fd.append('file', file);
+                xhr.send(fd);
+            });
         }
 
         // 设备型号名称映射（按 model key 中的 type 字段）

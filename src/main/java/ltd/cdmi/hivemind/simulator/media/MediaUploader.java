@@ -17,6 +17,7 @@ package ltd.cdmi.hivemind.simulator.media;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
@@ -26,9 +27,11 @@ import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
@@ -57,6 +60,72 @@ public class MediaUploader {
             ".jpg", ".jpeg", ".png", ".dng", ".tif", ".tiff",
             ".mp4", ".mov", ".avi"
     );
+
+    /** 图片扩展名（航点拍照只取图片，目录里的视频不能当照片上传） */
+    private static final List<String> IMAGE_EXTENSIONS = List.of(
+            ".jpg", ".jpeg", ".png", ".dng", ".tif", ".tiff"
+    );
+
+    /** JAR 内置示例照片（media-dir 无用户照片时按顺序循环，作为航点拍照的图片内容） */
+    private static final List<String> SAMPLE_PHOTO_RESOURCES = List.of(
+            "media-samples/sample-photo.jpg",
+            "media-samples/sample-photo-2.jpg",
+            "media-samples/sample-photo-3.jpg"
+    );
+
+    /** JAR 内置示例视频（仅随示例预置落盘，供通用媒体上传演示） */
+    private static final String SAMPLE_VIDEO_RESOURCE = "media-samples/sample-video.mp4";
+
+    /** 预置样例文件名：与用户自己放入的文件区分，用户照片存在时不再使用这些样例 */
+    private static final List<String> PRESET_FILE_NAMES = List.of(
+            "sample-photo.jpg", "sample-photo-2.jpg", "sample-photo-3.jpg", "sample-video.mp4"
+    );
+
+    /**
+     * 预置样例清单（classpath 资源 → 落盘文件名），供 {@link MediaSampleInitializer} 预置。
+     */
+    public static List<PresetSample> presetSamples() {
+        List<PresetSample> samples = new ArrayList<>();
+        for (String resource : SAMPLE_PHOTO_RESOURCES) {
+            samples.add(new PresetSample(resource, fileNameOf(resource)));
+        }
+        samples.add(new PresetSample(SAMPLE_VIDEO_RESOURCE, fileNameOf(SAMPLE_VIDEO_RESOURCE)));
+        return samples;
+    }
+
+    /** 是否为 JAR 内置预置样例文件（按文件名判断）。 */
+    public static boolean isPresetFile(Path file) {
+        return file != null && PRESET_FILE_NAMES.contains(file.getFileName().toString());
+    }
+
+    private static String fileNameOf(String resource) {
+        return resource.substring(resource.lastIndexOf('/') + 1);
+    }
+
+    /** 预置样例：{@code resource} 为 classpath 资源，{@code fileName} 为落盘文件名。 */
+    public record PresetSample(String resource, String fileName) {}
+
+    /**
+     * 生成一张可上传的示例照片文件（JAR 内置资源解出到临时文件，调用方负责删除）。
+     * <p>航点拍照在 media-dir 无可用照片时仍需上传真实字节，否则平台按 object_key 取图会 404。
+     * <p>按 {@code index} 轮换不同示例照片，使同一任务的多次拍照不全是同一张图。
+     *
+     * @param index 拍照序号（负值也可，取模后落到合法区间）
+     * @return 临时 JPEG 文件
+     * @throws IOException 资源缺失或写入失败
+     */
+    public Path samplePhoto(int index) throws IOException {
+        String resource = SAMPLE_PHOTO_RESOURCES.get(
+                Math.floorMod(index, SAMPLE_PHOTO_RESOURCES.size()));
+        Path temp = Files.createTempFile("dji-photo-", ".jpg");
+        try (InputStream in = new ClassPathResource(resource).getInputStream()) {
+            Files.copy(in, temp, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            Files.deleteIfExists(temp);
+            throw e;
+        }
+        return temp;
+    }
 
     /**
      * 上传单个文件到对象存储。
@@ -102,6 +171,38 @@ public class MediaUploader {
      * @return 文件路径列表（按文件名排序）；目录无效或为空返回空列表
      */
     public List<Path> listMediaFiles(String mediaDir) {
+        return listFiles(mediaDir, SUPPORTED_EXTENSIONS);
+    }
+
+    /**
+     * 扫描目录中的图片文件（jpg/jpeg/png/dng/tif/tiff），视频不计入。
+     * <p>航点拍照产出的是照片，目录里的 mp4/mov/avi 不能当作照片上传。
+     *
+     * @param mediaDir 媒体文件目录路径
+     * @return 图片文件列表（按文件名排序）；目录无效或为空返回空列表
+     */
+    public List<Path> listPhotoFiles(String mediaDir) {
+        return listFiles(mediaDir, IMAGE_EXTENSIONS);
+    }
+
+    /**
+     * 扫描目录中用户自己放入的图片文件（排除 JAR 内置预置样例），按文件名排序。
+     * <p>用户照片优先于示例图：只要目录里有自己上传/放入的照片，就用它们作为拍照内容，
+     * 避免预置的示例图混进素材池被轮换取到。
+     *
+     * @param mediaDir 媒体文件目录路径
+     * @return 用户图片文件列表；目录无效或为空返回空列表
+     */
+    public List<Path> listUserPhotoFiles(String mediaDir) {
+        return listPhotoFiles(mediaDir).stream()
+                .filter(p -> !isPresetFile(p))
+                .toList();
+    }
+
+    /**
+     * 按扩展名白名单扫描目录。
+     */
+    private List<Path> listFiles(String mediaDir, List<String> extensions) {
         if (mediaDir == null || mediaDir.isBlank()) {
             return List.of();
         }
@@ -115,7 +216,7 @@ public class MediaUploader {
             stream.filter(Files::isRegularFile)
                     .filter(p -> {
                         String name = p.getFileName().toString().toLowerCase();
-                        return SUPPORTED_EXTENSIONS.stream().anyMatch(name::endsWith);
+                        return extensions.stream().anyMatch(name::endsWith);
                     })
                     .sorted()
                     .forEach(files::add);

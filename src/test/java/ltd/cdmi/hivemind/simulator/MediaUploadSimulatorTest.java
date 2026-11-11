@@ -24,6 +24,7 @@ import ltd.cdmi.hivemind.simulator.config.SimulatorProperties;
 import ltd.cdmi.dji.cloudapi.sdk.model.DockModel;
 import ltd.cdmi.dji.cloudapi.sdk.model.DroneModel;
 import ltd.cdmi.hivemind.simulator.device.DockOnlineService;
+import ltd.cdmi.hivemind.simulator.media.CaptureSnapshot;
 import ltd.cdmi.hivemind.simulator.media.MediaUploader;
 import ltd.cdmi.hivemind.simulator.handler.MediaUploadSimulator;
 import ltd.cdmi.hivemind.simulator.handler.ServiceCommandHandler;
@@ -109,11 +110,14 @@ class MediaUploadSimulatorTest {
                 Mockito.mock(ServiceCommandHandler.class), new MediaUploader(), newRuntimeConfig(), 0);
     }
 
-    /** Mock storage_config_get 返回含 object_key_prefix 的 requests_reply */
+    /** Mock storage_config_get 返回含 object_key_prefix 的 requests_reply（完整 STS 字段，凭证有效） */
     private void mockStorageConfig(DockOnlineService onlineService, ObjectMapper objectMapper,
                                    String prefix) throws Exception {
         JsonNode configReply = objectMapper.readTree(String.format(
-                "{\"data\":{\"output\":{\"bucket\":\"test-bucket\",\"object_key_prefix\":\"%s\"}}}", prefix));
+                "{\"data\":{\"result\":0,\"output\":{\"bucket\":\"test-bucket\",\"object_key_prefix\":\"%s\","
+                        + "\"endpoint\":\"http://127.0.0.1:9000\",\"provider\":\"minio\","
+                        + "\"credentials\":{\"access_key_id\":\"ak\",\"access_key_secret\":\"sk\","
+                        + "\"security_token\":\"token\",\"expire\":3300}}}}", prefix));
         Mockito.when(onlineService.sendRequest(Mockito.eq("storage_config_get"), Mockito.any()))
                 .thenReturn(configReply);
     }
@@ -148,6 +152,176 @@ class MediaUploadSimulatorTest {
         }).when(mqtt).publish(Mockito.anyString(), Mockito.anyString());
     }
 
+    /** 构造拍摄快照的测试辅助方法 */
+    private static CaptureSnapshot snapshot(double lat, double lng, double absAlt,
+                                            double relAlt, double yaw) {
+        return new CaptureSnapshot(lat, lng, absAlt, relAlt, yaw,
+                "2026-11-05 10:00:00", "", "0");
+    }
+
+    // ==================== 航点拍照：快照驱动上传 ====================
+
+    @DisplayName("TC-MEDIA-009：按拍摄快照逐张上报，metadata 使用拍摄瞬间遥测")
+    @Test
+    @SuppressWarnings("unchecked")
+    void uploadsEachSnapshotWithItsOwnMetadata() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        MqttClientManager mqtt = Mockito.mock(MqttClientManager.class);
+        DockOnlineService onlineService = Mockito.mock(DockOnlineService.class);
+        mockStorageConfig(onlineService, objectMapper, "camera");
+        simulateEventReplies(mqtt, objectMapper);
+
+        // 上传成功（不依赖真实 MinIO）：凭证有效即视为可上传，这里用无损 mock
+        MediaUploadSimulator simulator = Mockito.spy(new TestableSimulator(
+                testProps(), mqtt, objectMapper, onlineService,
+                Mockito.mock(ServiceCommandHandler.class), new MediaUploader(), newRuntimeConfig(), 10));
+        // 用已有素材目录避免依赖内置资源解出：直接构造两个快照
+        List<CaptureSnapshot> snapshots = List.of(
+                new CaptureSnapshot(30.6701, 104.0701, 550.5, 50.5, 12.5,
+                        "2026-11-05 10:00:01", "point1", "0"),
+                new CaptureSnapshot(30.6702, 104.0702, 551.5, 51.5, 45.0,
+                        "2026-11-05 10:00:02", "point2", "0"));
+
+        // 只验证回调内容；S3 上传在网络不可用时返回 false，会导致跳过回调，
+        // 因此这里把 upload 打桩为成功以聚焦回调字段
+        MediaUploader uploader = Mockito.mock(MediaUploader.class);
+        Mockito.when(uploader.listUserPhotoFiles(Mockito.any())).thenReturn(List.of());
+        Mockito.when(uploader.listPhotoFiles(Mockito.any())).thenReturn(List.of());
+        Mockito.when(uploader.samplePhoto(Mockito.anyInt())).thenReturn(java.nio.file.Path.of("/tmp/fake.jpg"));
+        Mockito.when(uploader.upload(Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(true);
+        TestableSimulator sim = new TestableSimulator(
+                testProps(), mqtt, objectMapper, onlineService,
+                Mockito.mock(ServiceCommandHandler.class), uploader, newRuntimeConfig(), 10);
+
+        sim.simulateMediaUpload("FLIGHT-PHOTO", snapshots);
+
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(mqtt, Mockito.atLeast(2)).publish(Mockito.anyString(), captor.capture());
+        List<JsonNode> callbacks = new ArrayList<>();
+        for (String payload : captor.getAllValues()) {
+            JsonNode node = objectMapper.readTree(payload);
+            if ("file_upload_callback".equals(node.path("method").asText())) {
+                callbacks.add(node.path("data").path("file"));
+            }
+        }
+        assertEquals(2, callbacks.size(), "每个 takePhoto 动作应产生一条回调");
+
+        JsonNode first = callbacks.get(0);
+        assertEquals("DJI_0001_point1.JPG", first.path("name").asText());
+        assertEquals("camera/FLIGHT-PHOTO/DJI_0001_point1.JPG", first.path("object_key").asText());
+        assertEquals(550.5, first.path("metadata").path("absolute_altitude").asDouble(), 1e-9);
+        assertEquals(50.5, first.path("metadata").path("relative_altitude").asDouble(), 1e-9);
+        assertEquals(30.6701, first.path("metadata").path("shoot_position").path("lat").asDouble(), 1e-9);
+        assertEquals("2026-11-05 10:00:01", first.path("metadata").path("create_time").asText());
+        assertEquals("12.5", first.path("metadata").path("gimbal_yaw_degree").asText());
+
+        JsonNode second = callbacks.get(1);
+        assertEquals("DJI_0002_point2.JPG", second.path("name").asText());
+        assertEquals(30.6702, second.path("metadata").path("shoot_position").path("lat").asDouble(), 1e-9);
+        assertEquals("45.0", second.path("metadata").path("gimbal_yaw_degree").asText());
+    }
+
+    @DisplayName("TC-MEDIA-022：目录有用户图片时上传用户图片，视频与预置样例都不参与")
+    @Test
+    void uploadsUserPhotoFilesInsteadOfPresets() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        MqttClientManager mqtt = Mockito.mock(MqttClientManager.class);
+        DockOnlineService onlineService = Mockito.mock(DockOnlineService.class);
+        mockStorageConfig(onlineService, objectMapper, "camera");
+        simulateEventReplies(mqtt, objectMapper);
+
+        java.nio.file.Path userPhoto = java.nio.file.Path.of("/tmp/user-shot.jpg");
+        MediaUploader uploader = Mockito.mock(MediaUploader.class);
+        Mockito.when(uploader.listUserPhotoFiles(Mockito.any())).thenReturn(List.of(userPhoto));
+        Mockito.when(uploader.listPhotoFiles(Mockito.any())).thenReturn(List.of(userPhoto));
+        Mockito.when(uploader.samplePhoto(Mockito.anyInt())).thenReturn(java.nio.file.Path.of("/tmp/fake.jpg"));
+        Mockito.when(uploader.upload(Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(true);
+
+        TestableSimulator sim = new TestableSimulator(
+                testProps(), mqtt, objectMapper, onlineService,
+                Mockito.mock(ServiceCommandHandler.class), uploader, newRuntimeConfig(), 10);
+
+        sim.simulateMediaUpload("FLIGHT-USER", List.of(snapshot(30.0, 104.0, 500, 30, 0)));
+
+        // 上传源必须是用户图片，而不是内置示例图
+        Mockito.verify(uploader).upload(Mockito.eq(userPhoto), Mockito.any(), Mockito.any());
+        Mockito.verify(uploader, Mockito.never()).samplePhoto(Mockito.anyInt());
+    }
+
+    @DisplayName("TC-MEDIA-022：目录只有预置样例时回退样例照片，仍不传视频")
+    @Test
+    void fallsBackToPresetPhotosNotVideos() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        MqttClientManager mqtt = Mockito.mock(MqttClientManager.class);
+        DockOnlineService onlineService = Mockito.mock(DockOnlineService.class);
+        mockStorageConfig(onlineService, objectMapper, "camera");
+        simulateEventReplies(mqtt, objectMapper);
+
+        java.nio.file.Path presetPhoto = java.nio.file.Path.of("/tmp/preset/sample-photo-2.jpg");
+        MediaUploader uploader = Mockito.mock(MediaUploader.class);
+        Mockito.when(uploader.listUserPhotoFiles(Mockito.any())).thenReturn(List.of());
+        Mockito.when(uploader.listPhotoFiles(Mockito.any())).thenReturn(List.of(presetPhoto));
+        Mockito.when(uploader.upload(Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(true);
+
+        TestableSimulator sim = new TestableSimulator(
+                testProps(), mqtt, objectMapper, onlineService,
+                Mockito.mock(ServiceCommandHandler.class), uploader, newRuntimeConfig(), 10);
+
+        sim.simulateMediaUpload("FLIGHT-PRESET", List.of(snapshot(30.0, 104.0, 500, 30, 0)));
+
+        Mockito.verify(uploader).upload(Mockito.eq(presetPhoto), Mockito.any(), Mockito.any());
+        // 不得退回到视频素材或额外解出临时示例图
+        Mockito.verify(uploader, Mockito.never()).listMediaFiles(Mockito.any());
+        Mockito.verify(uploader, Mockito.never()).samplePhoto(Mockito.anyInt());
+    }
+
+    @DisplayName("TC-MEDIA-010：文件上传失败时不发 file_upload_callback（避免平台按不存在的 object_key 取图）")
+    @Test
+    void skipsCallbackWhenUploadFails() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        MqttClientManager mqtt = Mockito.mock(MqttClientManager.class);
+        DockOnlineService onlineService = Mockito.mock(DockOnlineService.class);
+        mockStorageConfig(onlineService, objectMapper, "camera");
+        simulateEventReplies(mqtt, objectMapper);
+
+        MediaUploader uploader = Mockito.mock(MediaUploader.class);
+        Mockito.when(uploader.listUserPhotoFiles(Mockito.any())).thenReturn(List.of());
+        Mockito.when(uploader.listPhotoFiles(Mockito.any())).thenReturn(List.of());
+        Mockito.when(uploader.samplePhoto(Mockito.anyInt())).thenReturn(java.nio.file.Path.of("/tmp/fake.jpg"));
+        Mockito.when(uploader.upload(Mockito.any(), Mockito.any(), Mockito.any())).thenReturn(false);
+
+        TestableSimulator sim = new TestableSimulator(
+                testProps(), mqtt, objectMapper, onlineService,
+                Mockito.mock(ServiceCommandHandler.class), uploader, newRuntimeConfig(), 10);
+
+        sim.simulateMediaUpload("FLIGHT-FAIL", List.of(snapshot(30.0, 104.0, 500, 30, 0)));
+
+        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(mqtt, Mockito.atLeastOnce()).publish(Mockito.anyString(), captor.capture());
+        for (String payload : captor.getAllValues()) {
+            assertNotEquals("file_upload_callback", objectMapper.readTree(payload).path("method").asText(),
+                    "上传失败不应上报 file_upload_callback");
+        }
+        assertTrue(sim.getUploadedFiles().isEmpty());
+    }
+
+    @DisplayName("TC-MEDIA-011：无拍照动作时不发起媒体上传")
+    @Test
+    void skipsUploadWhenNoSnapshots() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        MqttClientManager mqtt = Mockito.mock(MqttClientManager.class);
+        DockOnlineService onlineService = Mockito.mock(DockOnlineService.class);
+
+        MediaUploadSimulator sim = new TestableSimulator(
+                testProps(), mqtt, objectMapper, onlineService,
+                Mockito.mock(ServiceCommandHandler.class), new MediaUploader(), newRuntimeConfig(), 0);
+
+        sim.simulateMediaUpload("FLIGHT-EMPTY", List.of(), true);
+
+        // 构造时会注册 events_reply 监听器，因此只断言没有发布会话/请求
+        Mockito.verify(mqtt, Mockito.never()).publish(Mockito.anyString(), Mockito.anyString());
+    }
+
     // ==================== TC-MEDIA-001：file_upload_callback 事件结构 ====================
 
     @SuppressWarnings("unchecked")
@@ -160,12 +334,13 @@ class MediaUploadSimulatorTest {
 
         MediaUploadSimulator simulator = createNoWaitSimulator(objectMapper, mqtt, onlineService);
 
-        // 反射调用 publishFileUploadCallback（4参数：含 objectKeyPrefix）
+        // 反射调用 publishFileUploadCallback（4参数：flightId, fileName, objectKey, snapshot）
         Method method = MediaUploadSimulator.class.getDeclaredMethod(
                 "publishFileUploadCallback", String.class, String.class,
-                int.class, String.class);
+                String.class, CaptureSnapshot.class);
         method.setAccessible(true);
-        method.invoke(simulator, "TEST-FLIGHT", "test.jpg", 0, "prefix-abc");
+        method.invoke(simulator, "TEST-FLIGHT", "test.jpg",
+                "prefix-abc/TEST-FLIGHT/test.jpg", snapshot(30.67, 104.07, 550.0, 50.0, 30.0));
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
         Mockito.verify(mqtt).publish(Mockito.anyString(), captor.capture());
@@ -190,17 +365,20 @@ class MediaUploadSimulatorTest {
         JsonNode ext = file.path("ext");
         assertEquals("TEST-FLIGHT", ext.path("flight_id").asText());
         assertEquals(DroneModel.M4TD.modelKey(), ext.path("drone_model_key").asText());
-        assertEquals(DroneModel.M4TD.modelKey(), ext.path("payload_model_key").asText());
+        // payload_model_key 是负载（相机）枚举值，不是飞行器型号（官方字段定义）
+        assertNotEquals(DroneModel.M4TD.modelKey(), ext.path("payload_model_key").asText());
+        assertTrue(ext.path("payload_model_key").asText().matches("\\d+-\\d+-\\d+"),
+                "payload_model_key 应为负载 index（如 0-67-0），实际=" + ext.path("payload_model_key").asText());
         assertTrue(ext.path("is_original").asBoolean());
 
-        // metadata 结构
+        // metadata 结构：全部来自拍摄快照
         JsonNode metadata = file.path("metadata");
-        assertTrue(metadata.has("absolute_altitude"));
-        assertTrue(metadata.has("create_time"));
-        assertTrue(metadata.has("gimbal_yaw_degree"));
-        assertTrue(metadata.has("relative_altitude"));
-        assertTrue(metadata.path("shoot_position").has("lat"));
-        assertTrue(metadata.path("shoot_position").has("lng"));
+        assertEquals(550.0, metadata.path("absolute_altitude").asDouble(), 1e-9);
+        assertEquals(50.0, metadata.path("relative_altitude").asDouble(), 1e-9);
+        assertEquals("30.0", metadata.path("gimbal_yaw_degree").asText());
+        assertEquals("2026-11-05 10:00:00", metadata.path("create_time").asText());
+        assertEquals(30.67, metadata.path("shoot_position").path("lat").asDouble(), 1e-9);
+        assertEquals(104.07, metadata.path("shoot_position").path("lng").asDouble(), 1e-9);
     }
 
     // ==================== TC-MEDIA-003：object_key 拼接 object_key_prefix ====================
@@ -221,9 +399,10 @@ class MediaUploadSimulatorTest {
 
         Method method = MediaUploadSimulator.class.getDeclaredMethod(
                 "publishFileUploadCallback", String.class, String.class,
-                int.class, String.class);
+                String.class, CaptureSnapshot.class);
         method.setAccessible(true);
-        method.invoke(simulator, flightId, fileName, 0, prefix);
+        method.invoke(simulator, flightId, fileName, prefix + "/" + flightId + "/" + fileName,
+                snapshot(30.67, 104.07, 550.0, 50.0, 0.0));
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
         Mockito.verify(mqtt).publish(Mockito.anyString(), captor.capture());
@@ -233,8 +412,7 @@ class MediaUploadSimulatorTest {
         String objectKey = node.path("data").path("file").path("object_key").asText();
         // object_key 格式：{object_key_prefix}/{flight_id}/{file_name}
         assertEquals(prefix + "/" + flightId + "/" + fileName, objectKey);
-        assertTrue(objectKey.startsWith(prefix));
-    }
+        assertTrue(objectKey.startsWith(prefix));    }
 
     // ==================== TC-MEDIA-004：highest_priority_upload_flighttask_media 事件结构 ====================
 

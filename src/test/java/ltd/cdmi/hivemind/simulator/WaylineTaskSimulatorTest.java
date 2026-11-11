@@ -27,8 +27,11 @@ import ltd.cdmi.hivemind.simulator.handler.HmsSimulator;
 import ltd.cdmi.hivemind.simulator.handler.MediaUploadSimulator;
 import ltd.cdmi.hivemind.simulator.handler.ServiceCommandHandler;
 import ltd.cdmi.hivemind.simulator.handler.WaylineTaskSimulator;
+import ltd.cdmi.hivemind.simulator.media.CaptureSnapshot;
 import ltd.cdmi.hivemind.simulator.mqtt.DockTopicSchema;
 import ltd.cdmi.hivemind.simulator.mqtt.MqttClientManager;
+import ltd.cdmi.hivemind.simulator.wayline.WaylineFlightEngine;
+import ltd.cdmi.hivemind.simulator.wayline.WaylinePlan;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -636,6 +639,204 @@ class WaylineTaskSimulatorTest {
                     "异常态取消不应修改 droneModeCode（mode_code=" + modeCode + "）");
             Mockito.verifyNoInteractions(mqtt);
         }
+    }
+
+    // ==================== TC-WAYLINE-028：航点拍照动作 ====================
+
+    /**
+     * 航点 takePhoto 动作按拍摄瞬间遥测生成媒体，空中回传开启时立即上传。
+     */
+    @DisplayName("TC-WAYLINE-028：航点拍照触发媒体上传（拍摄瞬间遥测）")
+    @Test
+    void takePhotoActionCapturesSnapshotAndUploads() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        DeviceState state = new DeviceState();
+        state.setAirTransferEnable(true);
+        state.setDroneLatitude(30.6801);
+        state.setDroneLongitude(104.0801);
+        state.setDroneElevation(551.2);
+        state.setDroneHeight(51.2);
+        state.setGimbalYaw(-42.5);
+
+        MqttClientManager mqtt = Mockito.mock(MqttClientManager.class);
+        ServiceCommandHandler commandHandler = Mockito.mock(ServiceCommandHandler.class);
+        MediaUploadSimulator mediaUpload = Mockito.mock(MediaUploadSimulator.class);
+
+        WaylineTaskSimulator simulator = new WaylineTaskSimulator(
+                testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(),
+                Mockito.mock(ltd.cdmi.hivemind.simulator.handler.HmsSimulator.class));
+
+        Field flightIdField = WaylineTaskSimulator.class.getDeclaredField("currentFlightId");
+        flightIdField.setAccessible(true);
+        flightIdField.set(simulator, "FLIGHT-PHOTO-001");
+
+        // 注入已到达的航点动作
+        WaylineFlightEngine engine = getRouteEngine(simulator);
+        engine.prepare(planWithAction("point1", 0.0));
+        engine.start("track-1");
+        // 引擎 start 会按航线写入位置；这里覆盖为拍摄瞬间的遥测值以验证快照如实取值
+        state.setDroneLatitude(30.6801);
+        state.setDroneLongitude(104.0801);
+        state.setDroneElevation(551.2);
+        state.setDroneHeight(51.2);
+        state.setGimbalYaw(-42.5);
+
+        Method capture = WaylineTaskSimulator.class.getDeclaredMethod("captureReachedActions");
+        capture.setAccessible(true);
+        capture.invoke(simulator);
+
+        ArgumentCaptor<List<CaptureSnapshot>> captor = ArgumentCaptor.forClass(List.class);
+        Mockito.verify(mediaUpload, Mockito.timeout(2000))
+                .simulateMediaUpload(Mockito.eq("FLIGHT-PHOTO-001"), captor.capture());
+        List<CaptureSnapshot> sent = captor.getValue();
+        assertEquals(1, sent.size());
+        CaptureSnapshot snapshot = sent.get(0);
+        assertEquals(30.6801, snapshot.latitude(), 1e-9);
+        assertEquals(104.0801, snapshot.longitude(), 1e-9);
+        assertEquals(551.2, snapshot.absoluteAltitude(), 1e-9);
+        assertEquals(51.2, snapshot.relativeAltitude(), 1e-9);
+        assertEquals(-42.5, snapshot.gimbalYawDegree(), 1e-9);
+        assertEquals("point1", snapshot.fileSuffix());
+        assertFalse(snapshot.captureTimeIso().isBlank());
+        // 累计拍摄记录 + 剩余张数递减
+        assertEquals(0, state.getRemainPhotoNum() - 6726);
+    }
+
+    /**
+     * 空中回传关闭时，照片不立即上传，改为任务落地后批量上传。
+     */
+    @DisplayName("TC-WAYLINE-028：空中回传关闭时落地后批量上传")
+    @Test
+    void airTransferDisabledDefersUploadToLanding() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        DeviceState state = new DeviceState();
+        state.setAirTransferEnable(false);
+
+        MqttClientManager mqtt = Mockito.mock(MqttClientManager.class);
+        MediaUploadSimulator mediaUpload = Mockito.mock(MediaUploadSimulator.class);
+
+        WaylineTaskSimulator simulator = new WaylineTaskSimulator(
+                testProps(), mqtt, state, objectMapper, Mockito.mock(ServiceCommandHandler.class),
+                mediaUpload, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(),
+                Mockito.mock(ltd.cdmi.hivemind.simulator.handler.HmsSimulator.class));
+
+        Field flightIdField = WaylineTaskSimulator.class.getDeclaredField("currentFlightId");
+        flightIdField.setAccessible(true);
+        flightIdField.set(simulator, "FLIGHT-DEFER-001");
+
+        WaylineFlightEngine engine = getRouteEngine(simulator);
+        engine.prepare(planWithAction("pointX", 0.0));
+        engine.start("track-1");
+
+        Method capture = WaylineTaskSimulator.class.getDeclaredMethod("captureReachedActions");
+        capture.setAccessible(true);
+        capture.invoke(simulator);
+
+        // 空中回传关闭：不应立即上传
+        Mockito.verify(mediaUpload, Mockito.after(300).never())
+                .simulateMediaUpload(Mockito.anyString(), Mockito.anyList());
+
+        // 落地：批量上传该张
+        Method complete = WaylineTaskSimulator.class.getDeclaredMethod("completeTask");
+        complete.setAccessible(true);
+        complete.invoke(simulator);
+
+        ArgumentCaptor<List<CaptureSnapshot>> captor = ArgumentCaptor.forClass(List.class);
+        Mockito.verify(mediaUpload, Mockito.timeout(2000))
+                .simulateMediaUpload(Mockito.eq("FLIGHT-DEFER-001"), captor.capture());
+        assertEquals(1, captor.getValue().size());
+        assertEquals("pointX", captor.getValue().get(0).fileSuffix());
+    }
+
+    /**
+     * 空中回传已上传的照片，落地后不重复上传（也不会退化为示例 3 文件）。
+     */
+    @DisplayName("TC-WAYLINE-028：空中回传的照片落地后不重复上传")
+    @Test
+    void airTransferredPhotosAreNotUploadedAgain() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        DeviceState state = new DeviceState();
+        state.setAirTransferEnable(true);
+
+        MqttClientManager mqtt = Mockito.mock(MqttClientManager.class);
+        MediaUploadSimulator mediaUpload = Mockito.mock(MediaUploadSimulator.class);
+
+        WaylineTaskSimulator simulator = new WaylineTaskSimulator(
+                testProps(), mqtt, state, objectMapper, Mockito.mock(ServiceCommandHandler.class),
+                mediaUpload, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(),
+                Mockito.mock(ltd.cdmi.hivemind.simulator.handler.HmsSimulator.class));
+
+        Field flightIdField = WaylineTaskSimulator.class.getDeclaredField("currentFlightId");
+        flightIdField.setAccessible(true);
+        flightIdField.set(simulator, "FLIGHT-AIR-001");
+
+        WaylineFlightEngine engine = getRouteEngine(simulator);
+        engine.prepare(planWithAction("air1", 0.0));
+        engine.start("track-1");
+
+        Method capture = WaylineTaskSimulator.class.getDeclaredMethod("captureReachedActions");
+        capture.setAccessible(true);
+        capture.invoke(simulator);
+        Mockito.verify(mediaUpload, Mockito.timeout(2000))
+                .simulateMediaUpload(Mockito.eq("FLIGHT-AIR-001"), Mockito.anyList());
+
+        Method complete = WaylineTaskSimulator.class.getDeclaredMethod("completeTask");
+        complete.setAccessible(true);
+        complete.invoke(simulator);
+
+        // 落地后不应再有上传调用（尤其不能退化为 3 个示例文件）
+        Mockito.verify(mediaUpload, Mockito.after(500).times(1))
+                .simulateMediaUpload(Mockito.anyString(), Mockito.anyList());
+        Mockito.verify(mediaUpload, Mockito.never())
+                .simulateMediaUpload(Mockito.anyString(), Mockito.anyInt());
+    }
+    /**
+     * 航线不含 takePhoto 动作时不产生媒体（真机不会凭空上报文件）。
+     */
+    @DisplayName("TC-WAYLINE-028：无拍照动作不产生媒体")
+    @Test
+    void noPhotoActionProducesNoMedia() throws Exception {
+        ObjectMapper objectMapper = new ObjectMapper();
+        DeviceState state = new DeviceState();
+        MqttClientManager mqtt = Mockito.mock(MqttClientManager.class);
+        MediaUploadSimulator mediaUpload = Mockito.mock(MediaUploadSimulator.class);
+
+        WaylineTaskSimulator simulator = new WaylineTaskSimulator(
+                testProps(), mqtt, state, objectMapper, Mockito.mock(ServiceCommandHandler.class),
+                mediaUpload, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(),
+                Mockito.mock(ltd.cdmi.hivemind.simulator.handler.HmsSimulator.class));
+
+        Field flightIdField = WaylineTaskSimulator.class.getDeclaredField("currentFlightId");
+        flightIdField.setAccessible(true);
+        flightIdField.set(simulator, "FLIGHT-NOPHOTO-001");
+
+        Method complete = WaylineTaskSimulator.class.getDeclaredMethod("completeTask");
+        complete.setAccessible(true);
+        complete.invoke(simulator);
+
+        Mockito.verify(mediaUpload, Mockito.after(400).never())
+                .simulateMediaUpload(Mockito.anyString(), Mockito.anyList());
+        Mockito.verify(mediaUpload, Mockito.never())
+                .simulateMediaUpload(Mockito.anyString(), Mockito.anyInt());
+    }
+
+    /** 取出私有 routeEngine 字段 */
+    private WaylineFlightEngine getRouteEngine(WaylineTaskSimulator simulator) throws Exception {
+        Field f = WaylineTaskSimulator.class.getDeclaredField("routeEngine");
+        f.setAccessible(true);
+        return (WaylineFlightEngine) f.get(simulator);
+    }
+
+    /** 构造只含一个 reachPoint takePhoto 动作的极简航线（触发时间 0，start 即到达） */
+    private WaylinePlan planWithAction(String suffix, double triggerTime) {
+        WaylinePlan.Waypoint home = new WaylinePlan.Waypoint(30.67, 104.07, 0, 500, 10, -1);
+        WaylinePlan.Waypoint point = new WaylinePlan.Waypoint(30.6701, 104.0701, 50, 550, 10, 0);
+        double distance = 11.1; // 约 0.0001° 纬度对应的米数，测试只需非零段长
+        return new WaylinePlan("test", List.of(point),
+                List.of(new WaylinePlan.Segment(home, point, 10, distance, distance, 100, 0, 0)),
+                distance, 100, 10, "noAction", 20,
+                List.of(new WaylinePlan.WaypointAction(0, 0, "takePhoto", suffix, "0", triggerTime)));
     }
 
     // ==================== TC-LOC-004：return_home_info 使用机场位置 ====================
