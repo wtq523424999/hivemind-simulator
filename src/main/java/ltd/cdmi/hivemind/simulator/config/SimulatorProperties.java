@@ -23,7 +23,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * <p>设备型号 / SN / 组织ID / 绑定码 / DJI License 均由用户在注册时通过前端表单输入，
  * 不在此配置。RuntimeConfig 提供默认设备型号（DOCK3 + M4TD）。</p>
  * <p>例外：{@link Sn#uniqueEnabled()} 唯一 SN 模式（多实例部署时生成并持久化实例唯一 SN，
- * 见设计文档 §7.1 SN 生成机制）。</p>
+ * 见设计文档 §7.1 SN 生成机制）。首启接入模式见 {@link DeviceProperties}。</p>
  */
 @ConfigurationProperties(prefix = "simulator")
 public record SimulatorProperties(

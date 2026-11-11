@@ -74,7 +74,7 @@ public class StatePushService {
 
         String gatewaySn = runtimeConfig.getGatewaySn();
         TopicSchema schema = runtimeConfig.getDeviceMode() == DeviceMode.PILOT
-                ? new PilotTopicSchema(runtimeConfig.getControllerType())
+                ? new PilotTopicSchema()
                 : dockTopicSchema;
 
         Map<String, Object> envelope = new LinkedHashMap<>();

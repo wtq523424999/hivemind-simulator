@@ -479,15 +479,15 @@
     <!-- Title 栏 -->
     <div class="app-header">
         <div class="app-header-left">
-            <h1>{{ connConfig.device_mode === 'PILOT' ? 'DJI Pilot 飞行器模拟器' : 'DJI Dock 机场模拟器' }}</h1>
+            <h1>{{ connConfig.device_mode === 'PILOT' ? 'DJI 遥控器（单兵）模拟器' : 'DJI Dock 机场模拟器' }}</h1>
             <el-tag :type="mqttConnected ? 'success' : (mqttError ? 'danger' : 'info')" size="small" :effect="mqttConnected ? 'light' : 'plain'" :class="{'mqtt-blink': connecting}">MQTT: {{ mqttConnected ? '已连接' : (connecting ? '连接中' : '未连接') }}</el-tag>
-            <el-tag :type="online ? 'success' : 'info'" size="small">{{ connConfig.device_mode === 'PILOT' ? '遥控器 ' + gatewayName : '机场 ' + gatewayName }}: {{ online ? '在线' : '离线' }}</el-tag>
+            <el-tag :type="online ? 'success' : 'info'" size="small">{{ connConfig.device_mode === 'PILOT' ? '遥控器（网关）' + gatewayName : '机场 ' + gatewayName }}: {{ online ? '在线' : '离线' }}</el-tag>
             <el-tag :type="droneTagType" size="small">飞行器 {{ droneName }}: {{ droneStatus }}</el-tag>
         </div>
         <div class="app-header-right">
             <el-button :type="powered ? 'danger' : 'success'" size="small" @click="powered ? doPowerOff() : doPowerOn()" :loading="connecting">{{ powered ? (connConfig.device_mode === 'PILOT' ? '遥控器关机' : '机场关机') : (connConfig.device_mode === 'PILOT' ? '遥控器开机' : '机场开机') }}</el-button>
             <el-button size="small" @click="showDeviceInfoDialog = true">{{ connConfig.device_mode === 'PILOT' ? '遥控器属性' : '机场属性' }}</el-button>
-            <el-button type="primary" size="small" @click="showRegisterDialog = true" :disabled="!powered">注册到第三方平台</el-button>
+            <el-button type="primary" size="small" @click="openRegisterDialog" :disabled="!powered">注册到第三方平台</el-button>
             <el-button size="small" @click="showDiagnosticDialog = true">诊断日志</el-button>
             <el-button size="small" @click="openCoverageDialog">覆盖率报告</el-button>
             <a href="/monitor.html" class="nav-link">调试器</a>
@@ -544,7 +544,7 @@
             <el-form-item label="接入模式">
                 <el-radio-group v-model="connConfig.device_mode" @change="onDeviceModeChange">
                     <el-radio-button label="DOCK">机场上云</el-radio-button>
-                    <el-radio-button label="PILOT">飞行器上云</el-radio-button>
+                    <el-radio-button label="PILOT">遥控器上云（单兵）</el-radio-button>
                 </el-radio-group>
             </el-form-item>
 
@@ -578,7 +578,7 @@
                 </el-form-item>
             </template>
 
-            <!-- Pilot 模式：遥控器类型 + 飞行器类型 -->
+            <!-- Pilot 模式：遥控器类型 + 飞行器类型 + 网关/子设备 SN -->
             <template v-else>
                 <el-form-item label="遥控器类型">
                     <el-select v-model="connConfig.controller_type" @change="onControllerTypeChange" placeholder="选择遥控器类型" style="width: 100%;">
@@ -594,6 +594,22 @@
                     <el-select v-model="connConfig.selected_payload" placeholder="选择挂载负载" style="width: 100%;">
                         <el-option v-for="o in payloadOptions" :key="o.value" :label="o.label" :value="o.value"></el-option>
                     </el-select>
+                </el-form-item>
+                <el-form-item label="遥控器 SN">
+                    <el-input v-model="snForm.controller_sn" :placeholder="snForm.controller_sn_placeholder" clearable>
+                        <template #append>
+                            <el-button @click="resetSnField('controller')" :disabled="!snForm.controller_sn">恢复默认</el-button>
+                        </template>
+                    </el-input>
+                    <div style="font-size: 12px; color: #909399; line-height: 1.4; margin-top: 4px;">遥控器是单兵模式的网关设备（domain=2）。留空使用默认 SN（{{ snForm.controller_sn_placeholder }}）；自定义需在设备离线时设置，仅限字母/数字/下划线/中划线</div>
+                </el-form-item>
+                <el-form-item label="飞行器 SN">
+                    <el-input v-model="snForm.drone_sn" :placeholder="snForm.drone_sn_placeholder" clearable>
+                        <template #append>
+                            <el-button @click="resetSnField('drone')" :disabled="!snForm.drone_sn">恢复默认</el-button>
+                        </template>
+                    </el-input>
+                    <div style="font-size: 12px; color: #909399; line-height: 1.4; margin-top: 4px;">飞行器作为遥控器的子设备（domain=0）。留空使用默认 SN（{{ snForm.drone_sn_placeholder }}）</div>
                 </el-form-item>
             </template>
 
@@ -622,7 +638,7 @@
             <div class="el-form-item" role="group" aria-label="注册流程">
                 <label class="el-form-item__label" style="width: 90px;">注册流程</label>
                 <div class="el-form-item__content">
-                    <el-tag type="info" size="small">Pilot 模式跳过注册，MQTT 连接后直接上线</el-tag>
+                    <el-tag type="info" size="small">遥控器作网关（domain=2），跳过机库注册，MQTT 连接后直接 update_topo 上线</el-tag>
                 </div>
             </div>
 
@@ -961,6 +977,7 @@
 <script src="/panels/dock-panel.js"></script>
 <script src="/panels/pilot-panel.js"></script>
 <script src="/panels/pilot-status.js"></script>
+<script src="/panels/pilot-fleet.js"></script>
 <script src="/panels/pilot-live.js"></script>
 <script src="/panels/pilot-cloud.js"></script>
 <script src="/panels/pilot-config.js"></script>
@@ -1072,16 +1089,19 @@ const app = createApp({
             mqtt_password: '',
         });
 
-        // SN 手动覆盖表单（TC-REG-032~036）：dock_sn/drone_sn 为用户输入值；
-        // *_placeholder 显示当前生效 SN（覆盖值或机型默认），留空提交表示清除覆盖恢复默认
+        // SN 表单：*_sn 为用户编辑值（初始为空，输入框以 placeholder 显示当前生效 SN）；
+        // *_sn_placeholder 显示当前生效 SN（覆盖值或机型默认），留空提交表示清除覆盖恢复默认
         const snForm = reactive({
             dock_sn: '',
             drone_sn: '',
+            controller_sn: '',
             dock_sn_placeholder: '',
             drone_sn_placeholder: '',
+            controller_sn_placeholder: '',
         });
         function resetSnField(which) {
             if (which === 'dock') snForm.dock_sn = '';
+            else if (which === 'controller') snForm.controller_sn = '';
             else snForm.drone_sn = '';
         }
         // 从 /api/device-info 刷新 placeholder（生效 SN，含覆盖值）
@@ -1090,7 +1110,17 @@ const app = createApp({
             if (info) {
                 snForm.dock_sn_placeholder = info.dockSn || '-';
                 snForm.drone_sn_placeholder = info.droneSn || '-';
+                snForm.controller_sn_placeholder = info.controllerSn || '-';
             }
+        }
+        // 把当前生效 SN 填入输入框（打开注册弹窗时的默认值展示）。
+        // 只填尚未编辑的字段，避免覆盖用户正在输入的内容；重置后由用户显式改回。
+        function prefillSnForm() {
+            refreshSnPlaceholders().then(() => {
+                if (!snForm.dock_sn) snForm.dock_sn = snForm.dock_sn_placeholder === '-' ? '' : snForm.dock_sn_placeholder;
+                if (!snForm.drone_sn) snForm.drone_sn = snForm.drone_sn_placeholder === '-' ? '' : snForm.drone_sn_placeholder;
+                if (!snForm.controller_sn) snForm.controller_sn = snForm.controller_sn_placeholder === '-' ? '' : snForm.controller_sn_placeholder;
+            });
         }
 
         // 机场类型选项
@@ -1114,6 +1144,10 @@ const app = createApp({
             if (!compatible.some(o => o.value === connConfig.drone_type)) {
                 connConfig.drone_type = compatible.length ? compatible[0].value : '';
             }
+            // 型号变化后默认 SN 也随之变化：清空已填充的输入，避免把旧机型的 SN 当成新机型的覆盖值提交
+            snForm.dock_sn = '';
+            snForm.drone_sn = '';
+            refreshSnPlaceholders();
         }
 
         // Pilot 模式遥控器类型选项
@@ -1160,6 +1194,9 @@ const app = createApp({
         // 飞行器类型切换时，清空负载选择（新机型可能不需要通用云台）
         function onDroneTypeChange() {
             connConfig.selected_payload = '';
+            // 机型变化 = 默认 SN 变化：清空已填充的 SN，回退到 placeholder 展示
+            snForm.drone_sn = '';
+            refreshSnPlaceholders();
         }
 
         // 遥控器类型切换时，若当前飞行器不兼容则自动切换到该遥控器的首个兼容飞行器
@@ -1169,6 +1206,10 @@ const app = createApp({
                 connConfig.drone_type = compatible.length ? compatible[0].value : '';
             }
             connConfig.selected_payload = '';  // 切换遥控器时清空负载选择
+            // 遥控器/飞行器默认 SN 随型号变化：清空已填充的输入，避免旧 SN 被当成覆盖值提交
+            snForm.controller_sn = '';
+            snForm.drone_sn = '';
+            refreshSnPlaceholders();
         }
 
         // 接入模式切换时，初始化对应模式的默认设备类型
@@ -1204,7 +1245,7 @@ const app = createApp({
 
         // 浏览器标签页标题随模式切换（与标题栏保持一致）
         function updateDocumentTitle() {
-            document.title = connConfig.device_mode === 'PILOT' ? 'DJI Pilot 飞行器模拟器' : 'DJI Dock 机场模拟器';
+            document.title = connConfig.device_mode === 'PILOT' ? 'DJI 遥控器（单兵）模拟器' : 'DJI Dock 机场模拟器';
         }
 
         // Title 栏网关设备名称（DOCK 模式=机场型号，PILOT 模式=遥控器型号），取当前选择，未选择显示「未选择」
@@ -1317,22 +1358,38 @@ const app = createApp({
             }
         }
 
+        /** 本地成功写入计数：用于丢弃"写之前发出、写之后才返回"的过期轮询响应 */
+        let stateWriteVersion = 0;
+
         async function refreshState() {
+            const versionAtStart = stateWriteVersion;
             const data = await fetchJSON('/api/state');
-            if (data) {
-                state.value = data;
-                editState.batteryPercent = data.batteryPercent;
-                editState.dockTemperature = data.dockTemperature;
-                editState.dockHumidity = data.dockHumidity;
-                editState.windSpeed = data.windSpeed;
-                editState.droneWindSpeed = data.droneWindSpeed ?? 3;
-                editState.windDirection = data.windDirection ?? 1;
-                editState.coverOpen = data.coverOpen;
-                editState.droneInDock = data.droneInDock;
-                editState.droneActivated = data.droneActivated ?? false;
-                editState.silentMode = data.silentMode ?? 0;
-                editState.controllerCapacity = data.controllerCapacity ?? 100;
-            }
+            if (!data) return;
+            // 请求在途期间发生过本地成功写入：这份响应基于旧值，回填会把刚提交的值打回去
+            if (versionAtStart !== stateWriteVersion) return;
+            state.value = data;
+            // 回填策略：正在编辑中的字段（值已被本地改动且尚未被服务端确认）不回填，
+            // 否则 2 秒轮询会用上一轮快照覆盖用户刚输入的值。
+            // 判定依据是"提交成功即由 saveState 触发 refreshState 刷新快照"，
+            // 未提交的本地改动在这里持续保留。
+            const pending = dirtyFields();
+            const assign = (name, value) => {
+                stateSnapshot[name] = value;
+                if (!pending.includes(name)) {
+                    editState[name] = value;
+                }
+            };
+            assign('batteryPercent', data.batteryPercent);
+            assign('dockTemperature', data.dockTemperature);
+            assign('dockHumidity', data.dockHumidity);
+            assign('windSpeed', data.windSpeed);
+            assign('droneWindSpeed', data.droneWindSpeed ?? 3);
+            assign('windDirection', data.windDirection ?? 1);
+            assign('coverOpen', data.coverOpen);
+            assign('droneInDock', data.droneInDock);
+            assign('droneActivated', data.droneActivated ?? false);
+            assign('silentMode', data.silentMode ?? 0);
+            assign('controllerCapacity', data.controllerCapacity ?? 100);
         }
 
         async function refreshTask() { task.value = await fetchJSON('/api/task') || {}; }
@@ -1814,15 +1871,23 @@ const app = createApp({
                 mqtt_port: port,
                 mqtt_username: connConfig.mqtt_username,
             };
-            // SN 手动覆盖（TC-REG-032~036）：仅 Dock 模式且用户输入非空时提交；
+            // SN 手动覆盖（TC-REG-032~036）：按接入模式提交对应的设备身份
             // 输入值等于当前生效 SN（placeholder）时不提交（避免无变化触发在线锁定误判）
-            if (connConfig.device_mode === 'DOCK' && snForm.dock_sn.trim()
-                    && snForm.dock_sn.trim() !== snForm.dock_sn_placeholder) {
-                body.dock_sn = snForm.dock_sn.trim();
-            }
-            if (connConfig.device_mode === 'DOCK' && snForm.drone_sn.trim()
-                    && snForm.drone_sn.trim() !== snForm.drone_sn_placeholder) {
-                body.drone_sn = snForm.drone_sn.trim();
+            if (connConfig.device_mode === 'DOCK') {
+                if (snForm.dock_sn.trim() && snForm.dock_sn.trim() !== snForm.dock_sn_placeholder) {
+                    body.dock_sn = snForm.dock_sn.trim();
+                }
+                if (snForm.drone_sn.trim() && snForm.drone_sn.trim() !== snForm.drone_sn_placeholder) {
+                    body.drone_sn = snForm.drone_sn.trim();
+                }
+            } else {
+                // 单兵模式：遥控器是网关（domain=2），飞行器是子设备（domain=0）
+                if (snForm.controller_sn.trim() && snForm.controller_sn.trim() !== snForm.controller_sn_placeholder) {
+                    body.controller_sn = snForm.controller_sn.trim();
+                }
+                if (snForm.drone_sn.trim() && snForm.drone_sn.trim() !== snForm.drone_sn_placeholder) {
+                    body.drone_sn = snForm.drone_sn.trim();
+                }
             }
             if (connConfig.mqtt_password) body.mqtt_password = connConfig.mqtt_password;
             // 注意：不在此处保存配置，注册成功后才保存（避免错误密码覆盖原密码）
@@ -1864,6 +1929,7 @@ const app = createApp({
                             // SN 覆盖已生效，清空输入框并刷新设备信息（设备信息卡片显示新 SN）
                             snForm.dock_sn = '';
                             snForm.drone_sn = '';
+                            snForm.controller_sn = '';
                             await refreshDeviceInfo();
                             await refreshSnPlaceholders();
                             mqttError.value = false;
@@ -1991,6 +2057,13 @@ const app = createApp({
 
         // 开机：已注册则自动重连+上线；未注册则引导用户先注册
         // powered 状态由 registerToPlatform 成功时设置，避免未注册/注册失败时假开机（刷新后状态不一致）
+        // 打开注册弹窗：先刷新并自动填充当前生效 SN（机场/飞行器/遥控器）
+        async function openRegisterDialog() {
+            showRegisterDialog.value = true;
+            await refreshSnPlaceholders();
+            prefillSnForm();
+        }
+
         async function doPowerOn() {
             if (powered.value) return;
             // 检查上次是否注册成功
@@ -1998,7 +2071,7 @@ const app = createApp({
             if (!lastRegistered) {
                 // 未注册：引导用户先完成注册（注册成功后 powered 自动设为 true）
                 ElementPlus.ElMessage.info('首次使用，请先完成注册');
-                showRegisterDialog.value = true;
+                await openRegisterDialog();
                 return;
             }
             // 已注册：显式重置状态后自动重连 + 上线
@@ -2029,11 +2102,48 @@ const app = createApp({
             hasMoreHistory.value = true;
         }
 
-        async function saveState() {
-            await fetchJSON('/api/state', {
+        /**
+         * 提交状态修改。
+         *
+         * <p>只提交本次被修改的字段（调用方从控件的 @change 事件传入字段名），
+         * 不再整包回写 editState：整包回写会把 2 秒轮询回填的其他字段一起提交，
+         * 与轮询形成"改一个字段 → 其他字段被打回上一次快照"的竞争。</p>
+         *
+         * <p>兼容两种调用方式：
+         * <ul>
+         *   <li>{@code saveState('windSpeed')} — 提交指定字段；</li>
+         *   <li>{@code saveState()} 或控件 @change 直接绑定时传入的原始值（非字符串）—
+         *       提交所有与最近一次服务端快照不一致的字段。</li>
+         * </ul></p>
+         */
+        async function saveState(field) {
+            const targets = typeof field === 'string' ? [field] : dirtyFields();
+            if (targets.length === 0) return;
+            const payload = {};
+            targets.forEach((name) => { payload[name] = editState[name]; });
+            const resp = await fetchJSON('/api/state', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(editState)
+                body: JSON.stringify(payload)
+            });
+            // 用响应里的权威状态回填：既确认写入成功，也让界面立刻反映后端实际值
+            if (resp && resp.success && resp.state) {
+                stateWriteVersion += 1;  // 让在途的旧轮询响应失效
+                targets.forEach((name) => {
+                    stateSnapshot[name] = resp.state[name];
+                    editState[name] = resp.state[name];
+                });
+            }
+        }
+
+        /** 最近一次从服务端确认过的状态快照，用于判断哪些字段被本地改动过 */
+        const stateSnapshot = reactive({});
+
+        /** 返回 editState 中与服务端快照不一致的字段名 */
+        function dirtyFields() {
+            return Object.keys(editState).filter((name) => {
+                if (!(name in stateSnapshot)) return false;
+                return editState[name] !== stateSnapshot[name];
             });
         }
 
@@ -2542,6 +2652,7 @@ const app = createApp({
         // 外壳模板（标题栏/日志区/公共弹窗）需要的共享项；Dock 专属项已迁移到 dock-panel.js
         return { mqttConnected, online, powered, mqttError, state, editState, task, streams, media, logs,
                  connConfig, connecting, deviceInfo, showRegisterDialog, licenseLocked, resetLicenseLock, showDeviceInfoDialog,
+                 snForm, resetSnField, openRegisterDialog,
                  gatewayName, droneName, droneStatus, droneTagType,
                  logFilter, autoScroll, logContainer, topicFilter, topicOptions, searchKeyword,
                  filteredLogs, historyLogs, loadingHistory, hasMoreHistory,
@@ -2574,6 +2685,7 @@ app.use(ElementPlus);
 registerDockPanel(app);
 registerPilotPanel(app);
 registerPilotStatusPanel(app);
+registerPilotFleetPanel(app);
 registerPilotLivePanel(app);
 registerPilotCloudPanel(app);
 registerPilotConfigPanel(app);

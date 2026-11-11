@@ -115,11 +115,29 @@ public class RuntimeConfig {
     /** SN 手动覆盖（TC-REG-032~036）：null 表示未覆盖，由机型派生（defaultSn 或唯一生成 SN） */
     private volatile String dockSnOverride;
     private volatile String droneSnOverride;
+    /** 遥控器 SN 手动覆盖（单兵模式网关身份）：null 表示未覆盖，由遥控器型号 defaultSn 派生 */
+    private volatile String controllerSnOverride;
 
     /** SN 覆盖合法字符集（SN 拼入 MQTT topic，禁止 / + # 与空白） */
     private static final Pattern SN_OVERRIDE_PATTERN = Pattern.compile("[0-9A-Za-z_-]{1,32}");
 
+    /**
+     * 不带首启设备身份配置的构造器（测试与既有调用方）。
+     */
     public RuntimeConfig(MqttProperties mqttProps, SimulatorProperties props, LiveConfigStore liveConfigStore) {
+        this(mqttProps, props, liveConfigStore, null);
+    }
+
+    /**
+     * Spring 注入的构造器：额外接受 {@link DeviceProperties}（{@code simulator.device.*}）。
+     *
+     * <p>多机库场景 provisioner 会注入 {@code SIMULATOR_DEVICE_MODE} /
+     * {@code SIMULATOR_CONTROLLER_TYPE}，让遥控器实例首启即为正确身份。</p>
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public RuntimeConfig(MqttProperties mqttProps, SimulatorProperties props,
+                         LiveConfigStore liveConfigStore,
+                         DeviceProperties deviceProperties) {
         this.mqttHost = mqttProps.host();
         this.mqttPort = mqttProps.port();
         this.mqttUsername = mqttProps.username();
@@ -138,6 +156,8 @@ public class RuntimeConfig {
         this.controllerSn = this.controllerType.defaultSn();
         this.selectedPayload = null;  // 默认未选择，OSD 构建时回退 defaultCameraFor()
         this.liveConfigStore = liveConfigStore;
+        // 首启设备身份（yml / 环境变量）：持久化文件存在时后者优先（见 restorePilotIdentity）
+        applyConfiguredDeviceIdentity(deviceProperties);
         // 唯一 SN 模式（simulator.sn.unique-enabled，设计文档 §7.1）
         SimulatorProperties.Sn snConfig = props.sn();
         this.snUniqueEnabled = snConfig != null && snConfig.uniqueEnabled();
@@ -251,6 +271,10 @@ public class RuntimeConfig {
             this.hivemindWsToken = saved.pilotWsToken() != null ? saved.pilotWsToken() : this.hivemindWsToken;
         }
 
+        // 接入模式与遥控器机型恢复：必须在任何 persistLiveConfig() 之前完成，
+        // 否则后续持久化会把尚未恢复的默认 DOCK 写回文件，PILOT 身份在下次重启时丢失
+        restorePilotIdentity(saved);
+
         // 唯一 SN 模式：恢复持久化的型号与 SN，或首次生成并立即持久化（TC-REG-028/029/031）
         if (snUniqueEnabled) {
             boolean dockRestored = restoreDockIdentity(saved);
@@ -271,11 +295,86 @@ public class RuntimeConfig {
                 this.droneSnOverride = saved.droneSnOverride();
                 overrideRestored = true;
             }
+            if (saved.controllerSnOverride() != null) {
+                this.controllerSnOverride = saved.controllerSnOverride();
+                overrideRestored = true;
+            }
             if (overrideRestored) {
-                log.info("SN 手动覆盖已恢复（dockSnOverride={}, droneSnOverride={}）",
-                        dockSnOverride != null ? "是" : "否", droneSnOverride != null ? "是" : "否");
+                log.info("SN 手动覆盖已恢复（dockSnOverride={}, droneSnOverride={}, controllerSnOverride={}）",
+                        dockSnOverride != null ? "是" : "否", droneSnOverride != null ? "是" : "否",
+                        controllerSnOverride != null ? "是" : "否");
                 persistLiveConfig();
             }
+        }
+    }
+
+    /**
+     * 应用 yml / 环境变量给出的首启设备身份（{@code simulator.device.mode} /
+     * {@code simulator.device.controller-type}）。
+     *
+     * <p>只作为初值：持久化的 live-config.json 优先级更高（见 {@link #restorePilotIdentity}），
+     * 避免容器环境变量把用户在控制台改过的身份在重启时回退。</p>
+     */
+    private void applyConfiguredDeviceIdentity(DeviceProperties device) {
+        if (device == null) {
+            return;
+        }
+        if (device.controllerType() != null && !device.controllerType().isBlank()) {
+            try {
+                this.controllerType = RcModel.valueOf(device.controllerType().trim().toUpperCase());
+                this.controllerSn = this.controllerType.defaultSn();
+            } catch (IllegalArgumentException e) {
+                log.warn("simulator.device.controller-type 无法识别（{}），使用默认 {}",
+                        device.controllerType(), controllerType);
+            }
+        }
+        if (device.mode() != null && !device.mode().isBlank() && !"DOCK".equalsIgnoreCase(device.mode())) {
+            try {
+                this.deviceMode = DeviceMode.valueOf(device.mode().trim().toUpperCase());
+                log.info("按配置初始化接入模式: deviceMode={}, controllerType={}", deviceMode, controllerType);
+            } catch (IllegalArgumentException e) {
+                log.warn("simulator.device.mode 无法识别（{}），使用默认 DOCK", device.mode());
+            }
+        }
+    }
+
+    /**
+     * 恢复接入模式与遥控器机型（含遥控器上云选中的负载）。
+     *
+     * <p>旧配置文件没有这些字段（null），此时保持 yml 默认值（DOCK + RC_PLUS），
+     * 与升级前的行为一致，不会让历史实例意外切到遥控器模式。</p>
+     */
+    private void restorePilotIdentity(LiveConfigStore.LiveConfig saved) {
+        if (saved == null) {
+            return;
+        }
+        if (saved.deviceMode() != null && !saved.deviceMode().isBlank()) {
+            try {
+                this.deviceMode = DeviceMode.valueOf(saved.deviceMode().trim().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                log.warn("持久化的接入模式无法识别（{}），保持默认 DOCK", saved.deviceMode());
+            }
+        }
+        if (saved.controllerType() != null && !saved.controllerType().isBlank()) {
+            try {
+                this.controllerType = RcModel.valueOf(saved.controllerType().trim().toUpperCase());
+                // 与 setControllerType 保持一致：型号决定默认 SN，覆盖值仍优先
+                this.controllerSn = this.controllerType.defaultSn();
+            } catch (IllegalArgumentException e) {
+                log.warn("持久化的遥控器型号无法识别（{}），保持默认 {}", saved.controllerType(), controllerType);
+            }
+        }
+        if (saved.selectedPayload() != null && !saved.selectedPayload().isBlank()) {
+            try {
+                this.selectedPayload = PayloadType.valueOf(saved.selectedPayload().trim().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                log.warn("持久化的负载型号无法识别（{}），回退默认主相机", saved.selectedPayload());
+                this.selectedPayload = null;
+            }
+        }
+        if (this.deviceMode == DeviceMode.PILOT) {
+            log.info("已恢复遥控器上云身份: controllerType={}, controllerSn={}, selectedPayload={}",
+                    controllerType, getControllerSn(), selectedPayload);
         }
     }
 
@@ -396,6 +495,32 @@ public class RuntimeConfig {
     public String getDroneSnOverride() { return droneSnOverride; }
 
     /**
+     * 生效遥控器 SN（单兵模式的网关 SN）。
+     * <p>优先级：手动覆盖 > 型号 defaultSn。遥控器与机场的覆盖相互独立，
+     * 因此同一实例切回机库上云时仍使用机场 SN，不会被单兵配置污染。</p>
+     */
+    public String getControllerSn() { return controllerSnOverride != null ? controllerSnOverride : controllerSn; }
+
+    /** 当前遥控器 SN 覆盖值（null 表示未覆盖，生效 SN 由型号派生） */
+    public String getControllerSnOverride() { return controllerSnOverride; }
+
+    /**
+     * 设置遥控器 SN 手动覆盖。
+     *
+     * @param sn 覆盖值；null 或空串清除覆盖（回退型号 defaultSn）；非法格式返回 false 不生效
+     * @return 是否设置成功
+     */
+    public boolean setControllerSnOverride(String sn) {
+        String validated = validateSnOverride(sn);
+        if (validated == null && sn != null && !sn.isBlank()) {
+            return false;
+        }
+        this.controllerSnOverride = validated;
+        persistLiveConfig();
+        return true;
+    }
+
+    /**
      * 设置机场 SN 手动覆盖（TC-REG-032/034/035）。
      *
      * @param sn 覆盖值；null 或空串清除覆盖（回退机型派生值）；非法格式返回 false 不生效
@@ -440,18 +565,45 @@ public class RuntimeConfig {
     public boolean isSnUniqueEnabled() { return snUniqueEnabled; }
 
     public DeviceMode getDeviceMode() { return deviceMode; }
-    public void setDeviceMode(DeviceMode deviceMode) { this.deviceMode = deviceMode; }
+
+    /**
+     * 切换接入模式。
+     * <p>模式决定谁是网关（DOCK=机场、PILOT=遥控器），必须跨重启保持，
+     * 否则多机库场景下重启后的遥控器实例会退化为机库实例、不再上线。
+     * 持久化由调用方（{@code POST /api/connect}）在整批配置更新后统一执行，
+     * 避免每个 setter 各写一次文件。</p>
+     */
+    public void setDeviceMode(DeviceMode deviceMode) {
+        if (deviceMode == null) {
+            return;
+        }
+        if (deviceMode != this.deviceMode) {
+            log.info("接入模式已切换: {}", deviceMode);
+            this.deviceMode = deviceMode;
+        }
+    }
 
     public RcModel getControllerType() { return controllerType; }
+
+    /**
+     * 切换遥控器型号并同步更新 SN。
+     * <p>已设置的 SN 覆盖保持有效（覆盖是用户显式指定的设备身份，切换型号不应静默丢弃），
+     * 因此切换型号后生效 SN 仍是覆盖值；清除覆盖才回退到新型号的 defaultSn。</p>
+     */
     public void setControllerType(RcModel controllerType) {
+        if (controllerType == null) {
+            return;
+        }
         this.controllerType = controllerType;
         this.controllerSn = controllerType.defaultSn();
     }
 
-    public String getControllerSn() { return controllerSn; }
-
     public PayloadType getSelectedPayload() { return selectedPayload; }
-    public void setSelectedPayload(PayloadType selectedPayload) { this.selectedPayload = selectedPayload; }
+
+    /** 设置遥控器上云选中的负载（null 表示回退机型默认主相机）。 */
+    public void setSelectedPayload(PayloadType selectedPayload) {
+        this.selectedPayload = selectedPayload;
+    }
 
     /**
      * 获取当前模式的网关 SN。
@@ -459,7 +611,7 @@ public class RuntimeConfig {
      * <p>供 MQTT topic 构造、update_topo 等场景使用，避免调用方关心当前模式。
      */
     public String getGatewaySn() {
-        return deviceMode == DeviceMode.PILOT ? controllerSn : dockSn;
+        return deviceMode == DeviceMode.PILOT ? getControllerSn() : getDockSn();
     }
 
     /**
@@ -550,6 +702,11 @@ public class RuntimeConfig {
                 snUniqueEnabled ? droneType.name() : null,
                 snUniqueEnabled ? dockSn : null,
                 snUniqueEnabled ? droneSn : null,
-                dockSnOverride, droneSnOverride);
+                dockSnOverride, droneSnOverride, controllerSnOverride,
+                // 接入模式与网关机型必须持久化：多机库场景下实例重启后
+                // 若退回 DOCK，遥控器不再是网关，平台侧该设备会一直离线
+                deviceMode == null ? null : deviceMode.name(),
+                controllerType == null ? null : controllerType.name(),
+                selectedPayload == null ? null : selectedPayload.name());
     }
 }

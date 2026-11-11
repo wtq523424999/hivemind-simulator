@@ -177,7 +177,7 @@ public class RemoteLogSimulator {
                         fileInfo.put("module", module);
                         fileInfo.put("object_key", objectKey);
                         fileInfo.put("boot_index", bootIndex);
-                        fileInfo.put("device_sn", "0".equals(module) ? runtimeConfig.getDroneSn() : runtimeConfig.getDockSn());
+                        fileInfo.put("device_sn", "0".equals(module) ? runtimeConfig.getDroneSn() : runtimeConfig.getGatewaySn());
                         fileInfo.put("key", objectKey + "/boot_" + bootIndex + ".log");
                         fileInfo.put("fingerprint", generateMd5(objectKey + bootIndex));
                         fileInfo.put("size", 155232);  // 默认文件大小
@@ -240,7 +240,7 @@ public class RemoteLogSimulator {
         List<Map<String, Object>> files = new ArrayList<>();
         for (String module : requestedModules) {
             boolean isDrone = "0".equals(module);
-            String deviceSn = isDrone ? runtimeConfig.getDroneSn() : runtimeConfig.getDockSn();
+            String deviceSn = isDrone ? runtimeConfig.getDroneSn() : runtimeConfig.getGatewaySn();
             int size = isDrone ? MOCK_LOG_SIZE_DRONE : MOCK_LOG_SIZE_DOCK;
             int bootIndexBase = isDrone ? MOCK_BOOT_INDEX_BASE_DRONE : MOCK_BOOT_INDEX_BASE_DOCK;
 
@@ -385,9 +385,9 @@ public class RemoteLogSimulator {
                 UUID.randomUUID().toString(),
                 UUID.randomUUID().toString(),
                 System.currentTimeMillis(),
-                method, data, runtimeConfig.getDockSn());
+                method, data, runtimeConfig.getGatewaySn());
 
-        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getDockSn());
+        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getGatewaySn());
         mqtt.publish(topic, MessageCodec.toJson(envelope));
     }
 

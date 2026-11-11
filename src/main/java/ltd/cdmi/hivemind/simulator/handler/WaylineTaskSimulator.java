@@ -34,6 +34,7 @@ import ltd.cdmi.dji.cloudapi.sdk.protocol.envelope.EventEnvelope;
 import ltd.cdmi.dji.cloudapi.sdk.protocol.method.EventMethod;
 import ltd.cdmi.dji.cloudapi.sdk.protocol.method.RequestsMethod;
 import ltd.cdmi.dji.cloudapi.sdk.protocol.method.ServiceMethod;
+import ltd.cdmi.dji.cloudapi.sdk.protocol.error.DjiErrorCode;
 import ltd.cdmi.hivemind.simulator.config.RuntimeConfig;
 import ltd.cdmi.hivemind.simulator.config.SimulatorProperties;
 import ltd.cdmi.hivemind.simulator.device.DeviceMode;
@@ -156,6 +157,13 @@ public class WaylineTaskSimulator {
     /** DJI 错误码：飞行器已经起飞，不支持取消（飞行中取消任务）。核实依据：Dock1 wayline.html flight_setup_abort 返回码 */
     private static final int ERR_DRONE_ALREADY_TAKEOFF = 326109;
 
+    /**
+     * 单兵（遥控器上云）收到 flighttask_* 时的拒绝码。
+     * <p>DJI 官方未定义"设备类型不具备该能力"的专用码，此处沿用"当前状态不支持"的 314000，
+     * 避免静默成功让平台误判任务已被接管。</p>
+     */
+    private static final int ERR_PILOT_MANUAL_ONLY = DjiErrorCode.OPERATION_NOT_SUPPORTED_IN_STATE;
+
     /** requests_reply 等待超时（秒） */
     private static final long REPLY_TIMEOUT_SECONDS = 10;
 
@@ -174,6 +182,7 @@ public class WaylineTaskSimulator {
     private final RuntimeConfig runtimeConfig;
     private final DiagnosticLogRecorder diagnosticRecorder;
     private final DockTopicSchema dockTopicSchema;
+    private final HmsSimulator hmsSimulator;
 
     private final ScheduledExecutorService scheduler;
     private final AtomicReference<ScheduledFuture<?>> progressTask = new AtomicReference<>();
@@ -203,7 +212,8 @@ public class WaylineTaskSimulator {
                                 MediaUploadSimulator mediaUploadSimulator,
                                 RuntimeConfig runtimeConfig,
                                 DiagnosticLogRecorder diagnosticRecorder,
-                                DockTopicSchema dockTopicSchema) {
+                                DockTopicSchema dockTopicSchema,
+                                HmsSimulator hmsSimulator) {
         this.props = props;
         this.mqtt = mqtt;
         this.state = state;
@@ -213,6 +223,7 @@ public class WaylineTaskSimulator {
         this.runtimeConfig = runtimeConfig;
         this.diagnosticRecorder = diagnosticRecorder;
         this.dockTopicSchema = dockTopicSchema;
+        this.hmsSimulator = hmsSimulator;
         this.routeLoader = new WaylineRouteLoader();
         this.routeEngine = new WaylineFlightEngine(state,
                 runtimeConfig.getLocationLatitude(), runtimeConfig.getLocationLongitude(),
@@ -251,6 +262,16 @@ public class WaylineTaskSimulator {
     private Map<String, Object> handleWaylineCommand(String method, JsonNode data, String bid) {
         log.info("处理航线命令: method={}, flightId={}", method,
                 data != null ? data.path("flight_id").asText() : "null");
+
+        // 单兵（遥控器上云）不自带任务执行容器：flighttask_* 只存在于机场特性集，
+        // Pilot 侧仅有航线的 HTTP 列表/上传/下载，任务由飞手在遥控器上手动执行。
+        // 静默回 result=0 会让平台误以为已接管任务，必须显式拒绝。
+        if (isPilotManualOnlyMode() && isFlighttaskMethod(method)) {
+            log.warn("单兵模式无 flighttask_* 执行能力，拒绝命令: method={}（航线由飞手在遥控器手动执行）", method);
+            diagnosticRecorder.record(DiagnosticCode.PLATFORM_DOCK_CAPABILITY_MISMATCH, method,
+                    "单兵（遥控器上云）不具备 flighttask_* 能力，航线由飞手在遥控器手动执行");
+            return Map.of("result", ERR_PILOT_MANUAL_ONLY);
+        }
 
         // 保存任务业务 id（TC-WAYLINE-027）：后续 flighttask_progress 事件回带此 bid（jobId）
         if (bid != null && !bid.isEmpty()) {
@@ -330,6 +351,22 @@ public class WaylineTaskSimulator {
             return dockType == DockModel.DOCK1;
         }
         return true;
+    }
+
+    /** 当前是否为单兵模式（遥控器作网关，飞手手动执行航线）。 */
+    private boolean isPilotManualOnlyMode() {
+        return runtimeConfig.getDeviceMode() == DeviceMode.PILOT;
+    }
+
+    /** 是否为机库特性集独有的航线任务执行命令（Pilot 未实现）。 */
+    private static boolean isFlighttaskMethod(String method) {
+        return ServiceMethod.FLIGHTTASK_PREPARE.methodName().equals(method)
+                || ServiceMethod.FLIGHTTASK_EXECUTE.methodName().equals(method)
+                || ServiceMethod.FLIGHTTASK_PAUSE.methodName().equals(method)
+                || ServiceMethod.FLIGHTTASK_RECOVERY.methodName().equals(method)
+                || ServiceMethod.FLIGHTTASK_UNDO.methodName().equals(method)
+                || ServiceMethod.FLIGHTTASK_STOP.methodName().equals(method)
+                || ServiceMethod.FLIGHT_SETUP_ABORT.methodName().equals(method);
     }
 
     /**
@@ -1255,12 +1292,12 @@ public class WaylineTaskSimulator {
         // home_dock_sn 和 multi_dock_home_info 仅 Dock2/3 支持（蛙跳场景），Dock1 无此字段
         DockModel dockType = runtimeConfig.getDockType();
         if (dockType != DockModel.DOCK1) {
-            data.put("home_dock_sn", runtimeConfig.getDockSn());
+            data.put("home_dock_sn", runtimeConfig.getGatewaySn());
 
             // 蛙跳任务机场返航信息（当前机场作为 home 点）
             List<Map<String, Object>> multiDockHomeInfo = new ArrayList<>();
             Map<String, Object> homeInfo = new LinkedHashMap<>();
-            homeInfo.put("sn", runtimeConfig.getDockSn());
+            homeInfo.put("sn", runtimeConfig.getGatewaySn());
             homeInfo.put("plan_status", 3); // 目标可达
             homeInfo.put("estimated_battery_consumption", 30);
             homeInfo.put("home_distance", 0.0); // 当前机场就是 home 点
@@ -1291,7 +1328,7 @@ public class WaylineTaskSimulator {
      */
     public void publishDeviceExitHomingNotify(int action, int reason) {
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("sn", runtimeConfig.getDockSn());
+        data.put("sn", runtimeConfig.getGatewaySn());
         data.put("action", action);
         data.put("reason", reason);
         publishEventWithReply(EventMethod.DEVICE_EXIT_HOMING_NOTIFY, data);
@@ -1334,7 +1371,7 @@ public class WaylineTaskSimulator {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("flight_id", effectiveFlightId);
         data.put("flight_type", flightType);
-        data.put("sn", runtimeConfig.getDockSn());
+        data.put("sn", runtimeConfig.getGatewaySn());
         data.put("timeout_time", timeoutTime);
         data.put("timestamp", (double) System.currentTimeMillis());
         publishEventWithReply(EventMethod.FLIGHT_SETUP_EXCEPTION_NOTIFY, data);
@@ -1400,9 +1437,9 @@ public class WaylineTaskSimulator {
                 UUID.randomUUID().toString(),
                 effectiveBid,
                 System.currentTimeMillis(),
-                method, data, runtimeConfig.getDockSn());
+                method, data, runtimeConfig.getGatewaySn());
 
-        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getDockSn());
+        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getGatewaySn());
         mqtt.publish(topic, MessageCodec.toJson(envelope));
         log.info("已发送事件: method={}, need_reply={}", method.methodName(), method.needReply());
     }
@@ -1466,10 +1503,10 @@ public class WaylineTaskSimulator {
         envelope.put("bid", bid);
         envelope.put("tid", tid);
         envelope.put("timestamp", System.currentTimeMillis());
-        envelope.put("gateway", runtimeConfig.getDockSn());
+        envelope.put("gateway", runtimeConfig.getGatewaySn());
         envelope.put("method", method);
         envelope.put("data", data);
-        String topic = dockTopicSchema.topic(dockTopicSchema.requests(), runtimeConfig.getDockSn());
+        String topic = dockTopicSchema.topic(dockTopicSchema.requests(), runtimeConfig.getGatewaySn());
         mqtt.publishJson(topic, envelope);
         log.info("已发送 requests: method={}, tid={}", method, tid);
 
@@ -1489,7 +1526,7 @@ public class WaylineTaskSimulator {
      * 确保 requests_reply 监听器已注册（dockSn 变化时重新注册）。
      */
     private void ensureReplyListener() {
-        String dockSn = runtimeConfig.getDockSn();
+        String dockSn = runtimeConfig.getGatewaySn();
         if (dockSn.equals(registeredReplyDockSn)) {
             return;
         }

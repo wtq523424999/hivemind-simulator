@@ -90,9 +90,9 @@ public class AirSenseSimulator {
                 UUID.randomUUID().toString(),
                 UUID.randomUUID().toString(),
                 System.currentTimeMillis(),
-                EventMethod.AIRSENSE_WARNING, data, runtimeConfig.getDockSn());
+                EventMethod.AIRSENSE_WARNING, data, runtimeConfig.getGatewaySn());
 
-        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getDockSn());
+        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getGatewaySn());
         mqtt.publish(topic, MessageCodec.toJson(envelope));
     }
 

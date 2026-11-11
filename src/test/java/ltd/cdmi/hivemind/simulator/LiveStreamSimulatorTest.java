@@ -311,6 +311,40 @@ class LiveStreamSimulatorTest {
     // ==================== TC-ONLINE-015：Pilot 模式 live_lens_change 按 video_id 精准切换 ====================
 
     /**
+     * 单兵飞行器休眠时 live_capacity 不再宣称飞行器相机可用（device_list 为空）。
+     * <p>与 Dock 模式同口径：飞行器不进拓扑就没法直播，避免平台按 live_capacity
+     * 认为还有一路可用流而发起必然失败的 live_start_push。</p>
+     */
+    @DisplayName("单兵飞行器休眠：live_capacity 无可用相机")
+    @Test
+    void pilotDroneSleep_liveCapacityHasNoCamera() throws Exception {
+        RuntimeConfig runtimeConfig = new RuntimeConfig(testMqttProps(), testProps(), new LiveConfigStore());
+        runtimeConfig.setDeviceMode(ltd.cdmi.hivemind.simulator.device.DeviceMode.PILOT);
+        runtimeConfig.setControllerType(RcModel.RC_PLUS_2);
+        DeviceState state = new DeviceState();
+        state.setDroneActivated(false);
+        statePush = Mockito.mock(StatePushService.class);
+        FfmpegWhipPusher ffmpegPusher = Mockito.mock(FfmpegWhipPusher.class);
+        Mockito.when(ffmpegPusher.isPushAvailable(FfmpegWhipPusher.URL_TYPE_RTMP)).thenReturn(true);
+        Mockito.when(ffmpegPusher.startPush(Mockito.anyString(), Mockito.anyString(), Mockito.anyString(),
+                Mockito.eq(FfmpegWhipPusher.URL_TYPE_RTMP))).thenReturn(true);
+        LiveStreamSimulator simulator = new LiveStreamSimulator(
+                Mockito.mock(ServiceCommandHandler.class), Mockito.mock(DrcCommandHandler.class),
+                runtimeConfig, ffmpegPusher, new DiagnosticLogRecorder(), state, statePush);
+
+        simulator.handle("live_start_push", json(
+                "{\"url\":\"rtmp://a/live\",\"url_type\":1,\"video_id\":\"" + VIDEO_ID + "\",\"video_quality\":3}"));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> changes = ArgumentCaptor.forClass(Map.class);
+        Mockito.verify(statePush).publishGatewayState(changes.capture());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> capacity = (Map<String, Object>) changes.getValue().get("live_capacity");
+        assertEquals(0, capacity.get("available_video_number"), "休眠时可用路数应为 0");
+        assertTrue(((List<?>) capacity.get("device_list")).isEmpty(), "休眠时 device_list 应为空");
+    }
+
+    /**
      * TC-ONLINE-015：其他 Pilot 机型（RC_PLUS）的 live_lens_change 走 Service Topic，
      * 解析 video_id + video_type，按 video_id 精准切换对应推流的 video_type
      */

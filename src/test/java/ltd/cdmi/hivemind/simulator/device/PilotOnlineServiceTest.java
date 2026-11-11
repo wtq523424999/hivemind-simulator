@@ -266,7 +266,7 @@ class PilotOnlineServiceTest {
         assertTrue(topicCaptor.getValue().endsWith("/state"), "topic 应以 /state 结尾");
     }
 
-    // ===== TC-ONLINE-016：RC Plus 2 update_topo 差异化测试 =====
+    // ===== TC-ONLINE-016：Pilot 上云 update_topo topic 与字段差异 =====
 
     /**
      * TC-ONLINE-016：RC Plus 2 的 update_topo 网关设备和子设备不包含 domain，子设备不包含 index。
@@ -276,6 +276,7 @@ class PilotOnlineServiceTest {
     @Test
     void rcPlus2UpdateTopoOmitsDomainAndIndex() {
         when(state.isOnline()).thenReturn(true);
+        when(state.isDroneActivated()).thenReturn(true);
         service.resendTopo();
 
         JsonNode data = capturePublishedData();
@@ -296,19 +297,21 @@ class PilotOnlineServiceTest {
     }
 
     /**
-     * TC-ONLINE-016：RC Plus 2 的 update_topo 使用 thing/product/{sn}/status Topic。
+     * TC-ONLINE-016：Pilot 上云 update_topo 上行固定为 thing/product/{sn}/status。
+     * <p>核实依据：DJI Pilot 上云设备拓扑更新文档，RC 与 RC Pro 均为
+     * Topic: thing/product/{gateway_sn}/status（详见 PilotTopicSchema）。</p>
      */
     @DisplayName("补充测试：RC Plus 2 update_topo 使用 thing/product Topic")
     @Test
     void rcPlus2UpdateTopoUsesThingProductTopic() {
         when(state.isOnline()).thenReturn(true);
+        when(state.isDroneActivated()).thenReturn(true);
         service.resendTopo();
 
         ArgumentCaptor<String> topicCaptor = ArgumentCaptor.forClass(String.class);
         verify(mqtt).publishJson(topicCaptor.capture(), any());
-        String topic = topicCaptor.getValue();
-        assertTrue(topic.startsWith("thing/product/"), "RC Plus 2 Topic 应以 thing/product/ 开头");
-        assertTrue(topic.endsWith("/status"), "Topic 应以 /status 结尾");
+        assertEquals("thing/product/RC-TEST-SN/status", topicCaptor.getValue(),
+                "Pilot 模式拓扑上行走 thing/product 前缀");
     }
 
     /**
@@ -318,6 +321,7 @@ class PilotOnlineServiceTest {
     @Test
     void otherPilotUpdateTopoIncludesDomainAndIndex() {
         when(state.isOnline()).thenReturn(true);
+        when(state.isDroneActivated()).thenReturn(true);
         when(runtimeConfig.getControllerType()).thenReturn(RcModel.RC_PLUS);
         // 重新创建 service，使 topicSchema 使用新的 controllerType
         service = new PilotOnlineService(mqtt, state, objectMapper, runtimeConfig, diagnosticRecorder, stateBuilders, mock(MapElementSimulator.class), mock(SituationAwarenessSimulator.class), mock(StatePushService.class));
@@ -338,12 +342,14 @@ class PilotOnlineServiceTest {
     }
 
     /**
-     * TC-ONLINE-016：其他 Pilot 机型（RC_PLUS）的 update_topo 使用 sys/product/{sn}/status Topic。
+     * TC-ONLINE-016：其他 Pilot 机型（RC_PLUS）的 update_topo 同样走 thing/product，
+     * 机型差异只体现在报文字段，不影响 topic 前缀。
      */
-    @DisplayName("补充测试：RC Plus update_topo 使用 sys/product Topic")
+    @DisplayName("补充测试：RC Plus update_topo 使用 thing/product Topic")
     @Test
-    void otherPilotUpdateTopoUsesSysProductTopic() {
+    void otherPilotUpdateTopoUsesThingProductTopic() {
         when(state.isOnline()).thenReturn(true);
+        when(state.isDroneActivated()).thenReturn(true);
         when(runtimeConfig.getControllerType()).thenReturn(RcModel.RC_PLUS);
         // 重新创建 service，使 topicSchema 使用新的 controllerType
         service = new PilotOnlineService(mqtt, state, objectMapper, runtimeConfig, diagnosticRecorder, stateBuilders, mock(MapElementSimulator.class), mock(SituationAwarenessSimulator.class), mock(StatePushService.class));
@@ -351,8 +357,25 @@ class PilotOnlineServiceTest {
 
         ArgumentCaptor<String> topicCaptor = ArgumentCaptor.forClass(String.class);
         verify(mqtt).publishJson(topicCaptor.capture(), any());
-        String topic = topicCaptor.getValue();
-        assertTrue(topic.startsWith("sys/product/"), "RC Plus Topic 应以 sys/product/ 开头");
-        assertTrue(topic.endsWith("/status"), "Topic 应以 /status 结尾");
+        assertEquals("thing/product/RC-TEST-SN/status", topicCaptor.getValue(),
+                "Pilot 模式拓扑上行不按遥控器型号区分，统一 thing/product 前缀");
+    }
+
+    /**
+     * status_reply 监听必须注册在 sys/product/{sn}/status_reply。
+     * <p>平台回复固定走 sys 通道（DJI RC / RC Pro 设备拓扑更新文档的 status_reply 一节），
+     * 若监听 thing/.../status_reply 将永远等不到回复。</p>
+     */
+    @DisplayName("补充测试：status_reply 监听注册在 sys/product Topic")
+    @Test
+    void statusReplyListenerRegisteredOnSysProductTopic() {
+        ArgumentCaptor<String> topicCaptor = ArgumentCaptor.forClass(String.class);
+        verify(mqtt).addListener(topicCaptor.capture(), any());
+
+        List<String> topics = topicCaptor.getAllValues();
+        assertTrue(topics.contains("sys/product/RC-TEST-SN/status_reply"),
+                "应监听 sys/product/{sn}/status_reply，实际注册: " + topics);
+        assertFalse(topics.contains("thing/product/RC-TEST-SN/status_reply"),
+                "不应监听 thing/product/{sn}/status_reply，实际注册: " + topics);
     }
 }

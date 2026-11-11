@@ -280,6 +280,7 @@ public class SimulatorController {
         result.put("dockModelKey", runtimeConfig.getDockType().modelKey());
         result.put("droneModelKey", runtimeConfig.getDroneType().modelKey());
         result.put("controllerSn", runtimeConfig.getControllerSn());
+        result.put("controllerSnOverride", runtimeConfig.getControllerSnOverride());
         result.put("controllerModelKey", runtimeConfig.getControllerType().modelKey());
         result.put("deviceMode", runtimeConfig.getDeviceMode().name());
         result.put("thingVersion", runtimeConfig.getThingVersion());
@@ -309,24 +310,30 @@ public class SimulatorController {
         if (updates.containsKey("droneActivated")) {
             boolean oldValue = state.isDroneActivated();
             boolean newValue = Boolean.parseBoolean(String.valueOf(updates.get("droneActivated")));
-            // Pilot 模式下飞行器始终激活，不允许切换为休眠
-            if (runtimeConfig.getDeviceMode() == DeviceMode.PILOT && !newValue) {
-                log.warn("Pilot 模式下飞行器始终激活，忽略 droneActivated=false 请求");
-            } else {
-                state.setDroneActivated(newValue);
-                if (state.isOnline()) {
-                    if (!oldValue && newValue) {
-                        // 飞行器从休眠→激活：推送 drone state 初始属性（事件性上报）
+            state.setDroneActivated(newValue);
+            if (state.isOnline() && oldValue != newValue) {
+                if (newValue) {
+                    // 飞行器从休眠→激活
+                    if (runtimeConfig.getDeviceMode() == DeviceMode.PILOT) {
+                        // 单兵休眠时已用空 sub_devices 把飞行器置为离线，唤醒必须重发带飞行器的拓扑
+                        pilotOnlineService.resendTopo();
+                    }
+                    // 推送 drone state 初始属性（事件性上报）
+                    if (runtimeConfig.getDeviceMode() == DeviceMode.PILOT) {
+                        pilotOnlineService.publishDroneState();
+                    } else {
                         onlineService.publishDroneState();
-                    } else if (oldValue && !newValue) {
-                        // 飞行器从激活→休眠：发送 update_topo 通知平台飞行器下线
+                    }
+                } else {
+                    // 飞行器从激活→休眠：发送 update_topo 通知平台飞行器下线
+                    if (runtimeConfig.getDeviceMode() == DeviceMode.PILOT) {
+                        pilotOnlineService.publishDroneSleepTopo();
+                    } else {
                         onlineService.publishDroneSleepTopo();
                     }
-                    if (oldValue != newValue) {
-                        // 飞行器进出拓扑会改变网关 live_capacity，按 pushMode=1 再报一次
-                        liveSimulator.publishLiveStateChange();
-                    }
                 }
+                // 飞行器进出拓扑会改变网关 live_capacity，按 pushMode=1 再报一次
+                liveSimulator.publishLiveStateChange();
             }
         }
         if (updates.containsKey("droneChargeState")) state.setDroneChargeState(((Number) updates.get("droneChargeState")).intValue());
@@ -592,10 +599,15 @@ public class SimulatorController {
 
     @PostMapping("/live/state/publish")
     public Map<String, Object> publishLiveState() {
-        onlineService.publishDockState();
+        if (runtimeConfig.getDeviceMode() == DeviceMode.PILOT) {
+            // 单兵模式网关为遥控器，机场 state 通道不存在
+            pilotOnlineService.publishControllerState();
+        } else {
+            onlineService.publishDockState();
+        }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("success", true);
-        result.put("topic", "thing/product/" + runtimeConfig.getDockSn() + "/state");
+        result.put("topic", "thing/product/" + runtimeConfig.getGatewaySn() + "/state");
         return result;
     }
 
@@ -1658,6 +1670,11 @@ public class SimulatorController {
         // 保存原始密码，连接失败时恢复（避免错误密码覆盖原密码，导致清空密码时无法使用原密码）
         String originalPassword = runtimeConfig.getMqttPassword();
 
+        // 记录变更前的网关身份：接入模式或网关 SN 变化后，已建立连接上的订阅集需要刷新
+        // （MQTT 连接不断开就不会触发 connectComplete，平台下发到新 SN 的指令会无人接收）
+        String previousGatewaySn = runtimeConfig.getGatewaySn();
+        DeviceMode previousDeviceMode = runtimeConfig.getDeviceMode();
+
         // 更新配置（仅更新非空字段）
         if (config.containsKey("mqtt_host") && !String.valueOf(config.get("mqtt_host")).isBlank()) {
             runtimeConfig.setMqttHost(String.valueOf(config.get("mqtt_host")).trim());
@@ -1758,10 +1775,25 @@ public class SimulatorController {
                 }
             }
         }
+        if (snLockedError == null && config.containsKey("controller_sn")) {
+            String sn = config.get("controller_sn") == null ? "" : String.valueOf(config.get("controller_sn")).trim();
+            if (!sn.equals(runtimeConfig.getControllerSn())) {
+                if (state.isOnline()) {
+                    snLockedError = "设备在线时不可修改遥控器 SN，请先关机";
+                } else if (sn.isEmpty()) {
+                    runtimeConfig.setControllerSnOverride(null);
+                    snChanged = true;
+                } else if (!runtimeConfig.setControllerSnOverride(sn)) {
+                    snLockedError = "遥控器 SN 格式非法（仅允许字母/数字/下划线/中划线，长度 1~32）: " + sn;
+                } else {
+                    snChanged = true;
+                }
+            }
+        }
         if (snChanged) {
             // 设备身份已更换：日志留痕；响应携带 sn_changed 让前端重置 registered 标志
-            log.info("SN 已变更（设备更换，TC-REG-037）：dockSn={}, droneSn={}，新设备需重新注册",
-                    runtimeConfig.getDockSn(), runtimeConfig.getDroneSn());
+            log.info("SN 已变更（设备更换，TC-REG-037）：dockSn={}, droneSn={}, controllerSn={}，新设备需重新注册",
+                    runtimeConfig.getDockSn(), runtimeConfig.getDroneSn(), runtimeConfig.getControllerSn());
         }
         if (snLockedError != null) {
             Map<String, Object> result = new LinkedHashMap<>();
@@ -1807,6 +1839,28 @@ public class SimulatorController {
         result.put("success", true);
         result.put("code", "0");
         result.put("online", state.isOnline());
+
+        // 网关身份变化后刷新下行订阅。
+        // 分两种情况：
+        //  1) 上面走了 reconnect()：连接重建时 connectComplete 已按新网关订阅，这里幂等重订阅一次无副作用，
+        //     作为"重连回调未触发/时序未到"的兜底；
+        //  2) 上面走了幂等分支（已连接且在线，未重连）：此时连接不断开、connectComplete 不会触发，
+        //     必须在这里补订阅，否则平台发往新网关 SN 的 services/property/set/drc/down 全部收不到。
+        String currentGatewaySn = runtimeConfig.getGatewaySn();
+        boolean gatewayChanged = !java.util.Objects.equals(previousGatewaySn, currentGatewaySn)
+                || previousDeviceMode != runtimeConfig.getDeviceMode();
+        if (gatewayChanged) {
+            log.info("网关身份已变化（{}:{} → {}:{}，模式 {} → {}），刷新下行订阅",
+                    previousDeviceMode, previousGatewaySn,
+                    runtimeConfig.getDeviceMode(), currentGatewaySn,
+                    previousDeviceMode, runtimeConfig.getDeviceMode());
+            int subscribed = mqtt.resubscribe();
+            result.put("resubscribed", subscribed);
+            result.put("gateway_changed", true);
+        }
+        // 接入模式与网关机型随连接配置一起落盘：否则容器重启后 PILOT 实例退回 DOCK，
+        // 遥控器不再是网关，平台侧该设备会一直离线
+        runtimeConfig.persistLiveConfig();
         return result;
     }
 

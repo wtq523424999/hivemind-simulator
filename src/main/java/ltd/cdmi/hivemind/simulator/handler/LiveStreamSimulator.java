@@ -586,7 +586,7 @@ public class LiveStreamSimulator {
         }
         cameraPosition = LiveCapacityBuilder.effectiveCameraPosition(runtimeConfig, cameraPosition);
         if (runtimeConfig.getDeviceMode() == DeviceMode.PILOT) {
-            return LiveCapacityBuilder.forPilot(runtimeConfig, droneVideoType);
+            return LiveCapacityBuilder.forPilot(runtimeConfig, state, droneVideoType);
         }
         return LiveCapacityBuilder.forDock(runtimeConfig, state, droneVideoType, cameraPosition);
     }

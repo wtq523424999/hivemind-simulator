@@ -1,7 +1,7 @@
 /**
  * Pilot 状态面板组件 — 状态模拟 + 位置模拟
  *
- * 状态模拟：遥控电量（Pilot 版，无机场状态）
+ * 状态模拟：飞行器激活/休眠切换 + 遥控电量（Pilot 版，无机场状态）
  * 位置模拟：遥控器位置=飞行器返航点 Home，地图/手动模式 + 无人机实时位置
  *
  * 共享状态/方法通过 inject('ctx') 获取。
@@ -17,11 +17,20 @@ function registerPilotStatusPanel(app) {
             return { ...ctx };
         },
         template: `
-            <!-- 状态模拟（Pilot 版：仅遥控电量） -->
+            <!-- 状态模拟（Pilot 版：飞行器激活/休眠 + 遥控电量） -->
             <el-card class="right-card" header="状态模拟">
                 <el-form label-width="72px" size="small">
+                    <el-form-item label="飞行器">
+                        <el-radio-group v-model="editState.droneActivated" size="small" @change="saveState('droneActivated')">
+                            <el-radio-button :value="false">休眠</el-radio-button>
+                            <el-radio-button :value="true">激活</el-radio-button>
+                        </el-radio-group>
+                        <span class="state-field-hint" style="margin-left: 8px;">
+                            {{ editState.droneActivated ? '推送飞行器 OSD' : '停止 OSD，平台侧子设备下线' }}
+                        </span>
+                    </el-form-item>
                     <el-form-item label="遥控电量">
-                        <el-slider v-model="editState.controllerCapacity" :min="0" :max="100" @change="saveState"></el-slider>
+                        <el-slider v-model="editState.controllerCapacity" :min="0" :max="100" @change="saveState('controllerCapacity')"></el-slider>
                     </el-form-item>
                 </el-form>
             </el-card>

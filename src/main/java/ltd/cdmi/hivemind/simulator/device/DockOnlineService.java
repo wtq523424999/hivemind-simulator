@@ -598,10 +598,11 @@ public class DockOnlineService {
         envelope.put("bid", bid);
         envelope.put("tid", tid);
         envelope.put("timestamp", System.currentTimeMillis());
-        envelope.put("gateway", runtimeConfig.getDockSn());
+        // 网关 SN 随接入模式变化：Dock 模式为机场 SN，Pilot（单兵）模式为遥控器 SN
+        envelope.put("gateway", runtimeConfig.getGatewaySn());
         envelope.put("method", method);
         envelope.put("data", data);
-        String topic = dockTopicSchema.topic(dockTopicSchema.requests(), runtimeConfig.getDockSn());
+        String topic = dockTopicSchema.topic(dockTopicSchema.requests(), runtimeConfig.getGatewaySn());
         mqtt.publishJson(topic, envelope);
         log.info("已发送 requests: method={}, tid={}", method, tid);
     }

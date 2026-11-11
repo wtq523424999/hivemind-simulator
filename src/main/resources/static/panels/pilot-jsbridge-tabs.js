@@ -235,6 +235,10 @@ function registerPilotJsbridgeTabsPanel(app) {
 
                     <!-- 航线模块 -->
                     <el-tab-pane label="航线" name="wayline">
+                        <div style="font-size:12px;color:#909399;margin-bottom:8px;line-height:1.6;">
+                            单兵只有航线的 HTTP 列表/上传/下载，没有 flighttask_prepare / flighttask_execute；
+                            航线由飞手在遥控器上手动执行，平台下发这类任务会被明确拒绝。
+                        </div>
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                             <span style="font-size:13px;">航线列表（{{ waylineList.length }}）</span>
                             <el-button size="small" text @click="loadWayline" :loading="waylineLoading">刷新</el-button>

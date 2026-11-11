@@ -1,8 +1,9 @@
 /**
- * Pilot 面板组件（飞行器上云模式专属）— 纯容器组件
+ * Pilot 面板组件（遥控器上云 / 单兵模式专属）— 纯容器组件
  *
- * 编排 5 个子组件：
- *   pilot-status（状态+位置模拟）/ pilot-live（直播模拟）/ pilot-cloud（设备上云）
+ * 编排 6 个子组件：
+ *   pilot-status（状态+位置模拟）/ pilot-fleet（单兵无人机清单与行为属性）
+ *   pilot-live（直播模拟）/ pilot-cloud（设备上云）
  *   pilot-config（JSBridge token 鉴权）/ pilot-jsbridge-tabs（7 模块 tab）
  *
  * 共享状态/方法通过 inject('ctx') 获取。
@@ -21,6 +22,7 @@ function registerPilotPanel(app) {
         },
         template: `
             <pilot-status></pilot-status>
+            <pilot-fleet></pilot-fleet>
             <pilot-live></pilot-live>
             <pilot-cloud></pilot-cloud>
             <pilot-config></pilot-config>

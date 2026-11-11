@@ -136,9 +136,9 @@ public class FlightAreaSimulator {
                 UUID.randomUUID().toString(),
                 UUID.randomUUID().toString(),
                 System.currentTimeMillis(),
-                EventMethod.FLIGHT_AREAS_DRONE_LOCATION, data, runtimeConfig.getDockSn());
+                EventMethod.FLIGHT_AREAS_DRONE_LOCATION, data, runtimeConfig.getGatewaySn());
 
-        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getDockSn());
+        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getGatewaySn());
         mqtt.publish(topic, MessageCodec.toJson(envelope));
     }
 
@@ -198,9 +198,9 @@ public class FlightAreaSimulator {
                 UUID.randomUUID().toString(),
                 UUID.randomUUID().toString(),
                 System.currentTimeMillis(),
-                EventMethod.FLIGHT_AREAS_SYNC_PROGRESS, data, runtimeConfig.getDockSn());
+                EventMethod.FLIGHT_AREAS_SYNC_PROGRESS, data, runtimeConfig.getGatewaySn());
 
-        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getDockSn());
+        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getGatewaySn());
         mqtt.publish(topic, MessageCodec.toJson(envelope));
     }
 
@@ -230,11 +230,11 @@ public class FlightAreaSimulator {
         envelope.put("bid", bid);
         envelope.put("tid", tid);
         envelope.put("timestamp", System.currentTimeMillis());
-        envelope.put("gateway", runtimeConfig.getDockSn());
+        envelope.put("gateway", runtimeConfig.getGatewaySn());
         envelope.put("method", "flight_areas_get");
         envelope.put("data", null);
 
-        String topic = dockTopicSchema.topic(dockTopicSchema.requests(), runtimeConfig.getDockSn());
+        String topic = dockTopicSchema.topic(dockTopicSchema.requests(), runtimeConfig.getGatewaySn());
         mqtt.publishJson(topic, envelope);
         log.info("已发送 requests: method=flight_areas_get, tid={}", tid);
 
@@ -293,7 +293,7 @@ public class FlightAreaSimulator {
      * <p>与 WaylineTaskSimulator 的 requests 机制独立（各自按 tid 匹配，互不干扰）。</p>
      */
     private void ensureReplyListener() {
-        String dockSn = runtimeConfig.getDockSn();
+        String dockSn = runtimeConfig.getGatewaySn();
         if (dockSn.equals(registeredReplyDockSn)) {
             return;
         }

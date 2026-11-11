@@ -19,6 +19,7 @@ import ltd.cdmi.dji.cloudapi.sdk.codec.MessageCodec;
 import ltd.cdmi.dji.cloudapi.sdk.protocol.envelope.EventEnvelope;
 import ltd.cdmi.dji.cloudapi.sdk.protocol.method.EventMethod;
 import ltd.cdmi.hivemind.simulator.config.RuntimeConfig;
+import ltd.cdmi.hivemind.simulator.device.DeviceMode;
 import ltd.cdmi.hivemind.simulator.device.DeviceState;
 import ltd.cdmi.hivemind.simulator.mqtt.DockTopicSchema;
 import ltd.cdmi.hivemind.simulator.mqtt.MqttClientManager;
@@ -154,6 +155,25 @@ public class HmsSimulator {
     }
 
     /**
+     * 按告警类型上报单个 HMS 告警，供异常条件拦截逻辑联动调用。
+     * <p>与 {@link #trigger(List)} 的区别：不校验 MQTT 连接（调用方已处于业务分支），
+     * 也不返回用户可见的 TriggerResult，仅记录日志。MQTT 未连接时静默跳过。</p>
+     *
+     * @param alarm 告警类型，null 时忽略
+     */
+    public void publishAlarm(AlarmType alarm) {
+        if (alarm == null) {
+            return;
+        }
+        if (!mqtt.isConnected()) {
+            log.warn("MQTT 未连接，跳过 HMS 联动上报: {}", alarm.name());
+            return;
+        }
+        publishHmsEvent(List.of(alarm));
+        log.info("HMS 联动上报: code={}, type={}", alarm.code, alarm.name());
+    }
+
+    /**
      * 构造并发送 HMS 事件报文。
      * <p>报文格式遵循 DJI Cloud API 协议：
      * {@code {bid, tid, timestamp, method:"hms", data:{list:[{code,level,module,in_the_sky,device_type,imminent,args}]}}}</p>
@@ -170,9 +190,9 @@ public class HmsSimulator {
                 UUID.randomUUID().toString(),
                 UUID.randomUUID().toString(),
                 System.currentTimeMillis(),
-                EventMethod.HMS, data, runtimeConfig.getDockSn());
+                EventMethod.HMS, data, runtimeConfig.getGatewaySn());
 
-        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getDockSn());
+        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getGatewaySn());
         mqtt.publish(topic, MessageCodec.toJson(envelope));
     }
 
@@ -205,9 +225,13 @@ public class HmsSimulator {
 
     /** 根据设备归属解析 device_type 字段（{domain-type-subtype} 格式，从 RuntimeConfig 读取避免硬编码） */
     private String resolveDeviceType(DeviceScope scope) {
-        return scope == DeviceScope.DOCK
-                ? runtimeConfig.getDockType().modelKey()
-                : runtimeConfig.getDroneType().modelKey();
+        if (scope == DeviceScope.DOCK) {
+            // 单兵没有机场：网关是遥控器（domain=2），网关侧告警应归属遥控器型号
+            return runtimeConfig.getDeviceMode() == DeviceMode.PILOT
+                    ? runtimeConfig.getControllerType().modelKey()
+                    : runtimeConfig.getDockType().modelKey();
+        }
+        return runtimeConfig.getDroneType().modelKey();
     }
 
     /**

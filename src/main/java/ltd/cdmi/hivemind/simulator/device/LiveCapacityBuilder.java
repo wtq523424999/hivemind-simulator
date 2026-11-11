@@ -60,8 +60,13 @@ public final class LiveCapacityBuilder {
 
     /**
      * Pilot 网关的直播能力：只有飞行器主相机（遥控器本身不是舱内相机）。
+     * 飞行器休眠时不再宣称相机可用，device_list 为空（与 Dock 模式一致）。
      */
-    public static Map<String, Object> forPilot(RuntimeConfig runtimeConfig, String videoType) {
+    public static Map<String, Object> forPilot(RuntimeConfig runtimeConfig, DeviceState state,
+                                               String videoType) {
+        if (!state.isDroneActivated()) {
+            return wrap(List.of());
+        }
         return wrap(List.of(droneCameraDevice(runtimeConfig, videoType)));
     }
 

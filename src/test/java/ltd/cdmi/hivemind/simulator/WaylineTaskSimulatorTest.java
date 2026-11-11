@@ -23,6 +23,7 @@ import ltd.cdmi.hivemind.simulator.device.DeviceState;
 import ltd.cdmi.dji.cloudapi.sdk.model.DockModel;
 import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticCode;
 import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticLogRecorder;
+import ltd.cdmi.hivemind.simulator.handler.HmsSimulator;
 import ltd.cdmi.hivemind.simulator.handler.MediaUploadSimulator;
 import ltd.cdmi.hivemind.simulator.handler.ServiceCommandHandler;
 import ltd.cdmi.hivemind.simulator.handler.WaylineTaskSimulator;
@@ -69,6 +70,7 @@ class WaylineTaskSimulatorTest {
         RuntimeConfig rc = Mockito.mock(RuntimeConfig.class);
         Mockito.when(rc.getDockType()).thenReturn(dockType);
         Mockito.when(rc.getDockSn()).thenReturn("DOCK3-SN");
+        Mockito.when(rc.getGatewaySn()).thenReturn("DOCK3-SN");
         Mockito.when(rc.getLocationLatitude()).thenReturn(30.67);
         Mockito.when(rc.getLocationLongitude()).thenReturn(104.07);
         Mockito.when(rc.getLocationHeight()).thenReturn(500.0);
@@ -111,7 +113,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // 用反射设置当前任务 ID
         Field flightIdField = WaylineTaskSimulator.class.getDeclaredField("currentFlightId");
@@ -175,7 +177,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // 模拟平台下发 flighttask_execute，services 消息的 bid=jobId
         JsonNode data = objectMapper.readTree("{\"flight_id\":\"FLIGHT-BID-001\"}");
@@ -215,7 +217,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // 平台未填 bid（null）
         JsonNode data = objectMapper.readTree("{\"flight_id\":\"FLIGHT-BID-002\"}");
@@ -250,7 +252,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // paused 状态应触发 break_point
         simulator.publishProgress("paused", 2, 60);
@@ -286,7 +288,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // stepIndex=5 → Dock3 current_step=stepSequence()[5]=35（最后一步）
         simulator.publishProgress("ok", 5, 100);
@@ -320,7 +322,7 @@ class WaylineTaskSimulatorTest {
         MqttClientManager mqtt1 = Mockito.mock(MqttClientManager.class);
         WaylineTaskSimulator sim1 = new WaylineTaskSimulator(
                 testProps(), mqtt1, new DeviceState(), objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
         sim1.publishProgress("in_progress", 2, 60);
         ArgumentCaptor<String> captor1 = ArgumentCaptor.forClass(String.class);
         Mockito.verify(mqtt1).publish(Mockito.anyString(), captor1.capture());
@@ -331,7 +333,7 @@ class WaylineTaskSimulatorTest {
         MqttClientManager mqtt3 = Mockito.mock(MqttClientManager.class);
         WaylineTaskSimulator sim3 = new WaylineTaskSimulator(
                 testProps(), mqtt3, new DeviceState(), objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
         sim3.publishProgress("in_progress", 2, 60);
         ArgumentCaptor<String> captor3 = ArgumentCaptor.forClass(String.class);
         Mockito.verify(mqtt3).publish(Mockito.anyString(), captor3.capture());
@@ -362,7 +364,7 @@ class WaylineTaskSimulatorTest {
         MqttClientManager mqtt1 = Mockito.mock(MqttClientManager.class);
         WaylineTaskSimulator sim1 = new WaylineTaskSimulator(
                 testProps(), mqtt1, new DeviceState(), objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
         assertTrue(sim1.publishProgressFailedWithBreakReason(528));
         Mockito.verify(mqtt1).publish(Mockito.anyString(), Mockito.any());
 
@@ -370,7 +372,7 @@ class WaylineTaskSimulatorTest {
         MqttClientManager mqtt2 = Mockito.mock(MqttClientManager.class);
         WaylineTaskSimulator sim2 = new WaylineTaskSimulator(
                 testProps(), mqtt2, new DeviceState(), objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK2), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK2), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
         assertFalse(sim2.publishProgressFailedWithBreakReason(528));
         Mockito.verify(mqtt2, Mockito.never()).publish(Mockito.anyString(), Mockito.any());
 
@@ -378,7 +380,7 @@ class WaylineTaskSimulatorTest {
         MqttClientManager mqtt3 = Mockito.mock(MqttClientManager.class);
         WaylineTaskSimulator sim3 = new WaylineTaskSimulator(
                 testProps(), mqtt3, new DeviceState(), objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
         assertFalse(sim3.publishProgressFailedWithBreakReason(528));
         Mockito.verify(mqtt3, Mockito.never()).publish(Mockito.anyString(), Mockito.any());
 
@@ -418,7 +420,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Map<String, Object> result = invokeCommand(simulator, "flighttask_stop", null);
 
@@ -437,7 +439,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Map<String, Object> result = invokeCommand(simulator, "flighttask_stop", null);
 
@@ -458,7 +460,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Map<String, Object> result = invokeCommand(simulator, "return_specific_home", null);
 
@@ -477,7 +479,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK2), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK2), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Map<String, Object> result = invokeCommand(simulator, "return_specific_home", null);
 
@@ -498,7 +500,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Map<String, Object> result = invokeCommand(simulator, "flight_setup_abort", null);
 
@@ -517,7 +519,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK2), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK2), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Map<String, Object> result = invokeCommand(simulator, "flight_setup_abort", null);
 
@@ -536,7 +538,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Map<String, Object> result = invokeCommand(simulator, "flight_setup_abort", null);
 
@@ -559,7 +561,7 @@ class WaylineTaskSimulatorTest {
         for (DockModel dockType : new DockModel[]{DockModel.DOCK1, DockModel.DOCK2, DockModel.DOCK3}) {
             WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                     testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                    runtimeConfig(dockType), diagnosticRecorder(), new DockTopicSchema());
+                    runtimeConfig(dockType), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
             Map<String, Object> result = invokeCommand(simulator, "flighttask_undo", null);
             assertEquals(0, result.get("result"),
@@ -590,7 +592,7 @@ class WaylineTaskSimulatorTest {
 
             WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                     testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                    runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                    runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
             Map<String, Object> result = invokeCommand(simulator, "flighttask_stop", null);
 
@@ -624,7 +626,7 @@ class WaylineTaskSimulatorTest {
 
             WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                     testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                    runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                    runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
             Map<String, Object> result = invokeCommand(simulator, "flighttask_stop", null);
 
@@ -656,13 +658,14 @@ class WaylineTaskSimulatorTest {
         RuntimeConfig rc = Mockito.mock(RuntimeConfig.class);
         Mockito.when(rc.getDockType()).thenReturn(DockModel.DOCK3);
         Mockito.when(rc.getDockSn()).thenReturn("DOCK3-SN");
+        Mockito.when(rc.getGatewaySn()).thenReturn("DOCK3-SN");
         Mockito.when(rc.getLocationLatitude()).thenReturn(31.23);
         Mockito.when(rc.getLocationLongitude()).thenReturn(121.47);
         Mockito.when(rc.getLocationHeight()).thenReturn(10.0);
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                rc, diagnosticRecorder(), new DockTopicSchema());
+                rc, diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Field flightIdField = WaylineTaskSimulator.class.getDeclaredField("currentFlightId");
         flightIdField.setAccessible(true);
@@ -714,7 +717,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Field flightIdField = WaylineTaskSimulator.class.getDeclaredField("currentFlightId");
         flightIdField.setAccessible(true);
@@ -754,7 +757,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // 默认值为 0
         assertEquals(0, state.getRthAltitude());
@@ -794,10 +797,11 @@ class WaylineTaskSimulatorTest {
         MediaUploadSimulator mediaUpload = Mockito.mock(MediaUploadSimulator.class);
         RuntimeConfig rc = Mockito.mock(RuntimeConfig.class);
         Mockito.when(rc.getDockSn()).thenReturn("DOCK3-SN");
+        Mockito.when(rc.getGatewaySn()).thenReturn("DOCK3-SN");
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                rc, diagnosticRecorder(), new DockTopicSchema());
+                rc, diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         simulator.publishFlighttaskReady(List.of("TASK-A", "TASK-B"));
 
@@ -828,7 +832,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         simulator.publishDeviceExitHomingNotify(1, 3);
 
@@ -864,10 +868,11 @@ class WaylineTaskSimulatorTest {
         RuntimeConfig rc = Mockito.mock(RuntimeConfig.class);
         Mockito.when(rc.getDockType()).thenReturn(DockModel.DOCK1);
         Mockito.when(rc.getDockSn()).thenReturn("DOCK1-SN");
+        Mockito.when(rc.getGatewaySn()).thenReturn("DOCK1-SN");
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                rc, diagnosticRecorder(), new DockTopicSchema());
+                rc, diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         boolean sent = simulator.publishFlightSetupExceptionNotify("FLIGHT-EXC-001", 6, 1);
         assertTrue(sent); // Dock1 支持已发送
@@ -902,7 +907,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK2), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK2), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         boolean sent = simulator.publishFlightSetupExceptionNotify("FLIGHT-EXC-001", 6, 1);
 
@@ -924,7 +929,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         simulator.publishInFlightWaylineProgress("WAYLINE-001", 50, 3, 0, 2);
 
@@ -959,7 +964,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // 构造包含 multi_dock_task 的 flighttask_execute 请求
         String json = "{\"flight_id\": \"TEST-FLIGHT-001\", \"multi_dock_task\": {"
@@ -1007,7 +1012,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Method m = WaylineTaskSimulator.class.getDeclaredMethod("updateDroneStateByStepIndex", int.class);
         m.setAccessible(true);
@@ -1073,7 +1078,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Field flightIdField = WaylineTaskSimulator.class.getDeclaredField("currentFlightId");
         flightIdField.setAccessible(true);
@@ -1115,7 +1120,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), recorder, new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), recorder, new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Field flightIdField = WaylineTaskSimulator.class.getDeclaredField("currentFlightId");
         flightIdField.setAccessible(true);
@@ -1158,7 +1163,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Field flightIdField = WaylineTaskSimulator.class.getDeclaredField("currentFlightId");
         flightIdField.setAccessible(true);
@@ -1195,7 +1200,7 @@ class WaylineTaskSimulatorTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, objectMapper, commandHandler, mediaUpload,
-                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // 先触发 return_home 调度延迟任务
         invokeCommand(simulator, "return_home", null);

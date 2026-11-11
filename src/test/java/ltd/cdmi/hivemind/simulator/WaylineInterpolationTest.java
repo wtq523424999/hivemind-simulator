@@ -21,6 +21,7 @@ import ltd.cdmi.hivemind.simulator.config.RuntimeConfig;
 import ltd.cdmi.hivemind.simulator.config.SimulatorProperties;
 import ltd.cdmi.hivemind.simulator.device.DeviceState;
 import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticLogRecorder;
+import ltd.cdmi.hivemind.simulator.handler.HmsSimulator;
 import ltd.cdmi.hivemind.simulator.handler.MediaUploadSimulator;
 import ltd.cdmi.hivemind.simulator.handler.ServiceCommandHandler;
 import ltd.cdmi.hivemind.simulator.handler.WaylineTaskSimulator;
@@ -62,6 +63,7 @@ class WaylineInterpolationTest {
         RuntimeConfig rc = Mockito.mock(RuntimeConfig.class);
         Mockito.when(rc.getDockType()).thenReturn(DockModel.DOCK3);
         Mockito.when(rc.getDockSn()).thenReturn("DOCK3-SN");
+        Mockito.when(rc.getGatewaySn()).thenReturn("DOCK3-SN");
         Mockito.when(rc.getLocationLatitude()).thenReturn(30.67);
         Mockito.when(rc.getLocationLongitude()).thenReturn(104.07);
         Mockito.when(rc.getLocationHeight()).thenReturn(500.0);
@@ -77,7 +79,7 @@ class WaylineInterpolationTest {
 
         WaylineTaskSimulator simulator = new WaylineTaskSimulator(
                 testProps(), mqtt, state, new ObjectMapper(), commandHandler, mediaUpload,
-                runtimeConfig(), Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema());
+                runtimeConfig(), Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // 反射设置 currentFlightId（插值迭代前置条件）
         Field flightIdField = WaylineTaskSimulator.class.getDeclaredField("currentFlightId");

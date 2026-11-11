@@ -78,7 +78,7 @@ public class PropertySetHandler {
 
     @PostConstruct
     public void init() {
-        String dockSn = runtimeConfig.getDockSn();
+        String dockSn = runtimeConfig.getGatewaySn();
         mqtt.addListener(dockTopicSchema.topic(dockTopicSchema.propertySet(), dockSn), this::handlePropertySet);
         log.info("PropertySetHandler 已注册监听: {}", dockTopicSchema.topic(dockTopicSchema.propertySet(), dockSn));
 
@@ -162,7 +162,7 @@ public class PropertySetHandler {
             reply.put("timestamp", System.currentTimeMillis());
             reply.put("data", replyData);
 
-            String replyTopic = dockTopicSchema.topic(dockTopicSchema.propertySetReply(), runtimeConfig.getDockSn());
+            String replyTopic = dockTopicSchema.topic(dockTopicSchema.propertySetReply(), runtimeConfig.getGatewaySn());
             mqtt.publishJson(replyTopic, reply);
             log.info("已回复 property/set_reply: tid={}", tid);
         } catch (Exception e) {

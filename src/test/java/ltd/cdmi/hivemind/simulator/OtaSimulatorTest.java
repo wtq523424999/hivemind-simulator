@@ -44,6 +44,7 @@ class OtaSimulatorTest {
     private RuntimeConfig runtimeConfig() {
         RuntimeConfig rc = Mockito.mock(RuntimeConfig.class);
         Mockito.when(rc.getDockSn()).thenReturn("DOCK-SN");
+        Mockito.when(rc.getGatewaySn()).thenReturn("DOCK-SN");
         Mockito.when(rc.getDroneSn()).thenReturn("DRONE-SN");
         return rc;
     }

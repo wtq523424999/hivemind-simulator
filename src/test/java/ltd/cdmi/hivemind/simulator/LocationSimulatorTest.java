@@ -200,7 +200,8 @@ class LocationSimulatorTest {
         assertEquals(10.0, rc.getLocationHeight());
         // 验证已调用持久化
         Mockito.verify(store).save(false, "", "", "", 31.23, 121.47, 10.0,
-                "", "", "", "", null, null, null, null, null, null);
+                "", "", "", "", null, null, null, null, null, null, null,
+                "DOCK", "RC_PLUS", null);
     }
 
     // ==================== TC-LOC-003：机场位置参数校验 ====================
@@ -420,7 +421,8 @@ class LocationSimulatorTest {
         assertEquals(0.0, state.getDroneHeight());
         // 持久化被调用
         Mockito.verify(store).save(false, "", "", "", 31.23, 121.47, 10.0,
-                "", "", "", "", null, null, null, null, null, null);
+                "", "", "", "", null, null, null, null, null, null, null,
+                "DOCK", "RC_PLUS", null);
     }
 
     // ==================== TC-LOC-018：飞行中机场位置变更不干预无人机位置 ====================

@@ -51,7 +51,7 @@ import java.util.concurrent.TimeUnit;
  * <ul>
  *   <li>无 config/airport_bind_status/airport_organization_get/airport_organization_bind 注册流程</li>
  *   <li>网关设备为遥控器（domain=2），使用 controllerSn/controllerType</li>
- *   <li>飞行器始终激活（遥控器直接控制，无收纳概念）</li>
+ *   <li>飞行器随遥控器上线默认激活；控制台可切换休眠/激活，休眠时以空 sub_devices 通知平台下线</li>
  *   <li>不需要 requests_reply 监听器（无注册流程）</li>
  * </ul>
  * <p>参考：<a href="https://developer.dji.com/doc/cloud-api-tutorial/cn/feature-set/pilot-feature-set/pilot-access-to-cloud.html">Pilot 上云功能介绍</a>
@@ -93,7 +93,7 @@ public class PilotOnlineService {
         this.runtimeConfig = runtimeConfig;
         this.diagnosticRecorder = diagnosticRecorder;
         this.stateBuilders = stateBuilders;
-        this.topicSchema = new PilotTopicSchema(runtimeConfig.getControllerType());
+        this.topicSchema = new PilotTopicSchema();
         this.mapElementSimulator = mapElementSimulator;
         this.situationAwarenessSimulator = situationAwarenessSimulator;
         this.statePushService = statePushService;
@@ -157,13 +157,14 @@ public class PilotOnlineService {
         }
         try {
             log.info("Pilot 模式上线：跳过注册流程，直接 update_topo");
+            // 遥控器上线即视为飞行器已开机，update_topo 需带上飞行器；
+            // 之后控制台可再切休眠（空 sub_devices 拓扑）
+            state.setDroneActivated(true);
             if (!sendUpdateTopo()) {
                 log.warn("update_topo 失败，停止上线流程");
                 return DockOnlineService.OnlineResult.fail(DiagnosticCode.PLATFORM_NO_REPLY, DockOnlineService.OnlineResult.STEP_UPDATE_TOPO);
             }
             state.setOnline(true);
-            // Pilot 模式飞行器始终激活（遥控器直接控制，无收纳概念）
-            state.setDroneActivated(true);
             publishLiveCapacity();
             publishControllerState();
             publishDroneState();
@@ -214,6 +215,37 @@ public class PilotOnlineService {
     // ==================== 报文构造 ====================
 
     /**
+     * 飞行器休眠：发送 update_topo，sub_devices 置空，通知平台子设备下线。
+     * <p>单兵模式下网关是遥控器，拓扑必须发到遥控器 SN 对应的 status 通道；
+     * 若复用 {@link DockOnlineService#publishDroneSleepTopo()}，平台会收到一条机场拓扑，
+     * 与已上线的遥控器网关不匹配。</p>
+     */
+    public void publishDroneSleepTopo() {
+        if (!state.isOnline()) {
+            log.warn("设备未上线，跳过飞行器休眠 update_topo");
+            return;
+        }
+        RcModel controllerType = runtimeConfig.getControllerType();
+        boolean isRcPlus2 = (controllerType == RcModel.RC_PLUS_2);
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        if (!isRcPlus2) {
+            data.put("domain", String.valueOf(controllerType.domain()));
+        }
+        data.put("type", controllerType.type());
+        data.put("sub_type", controllerType.subType());
+        data.put("device_secret", "secret");
+        data.put("nonce", "nonce");
+        data.put("sub_devices", List.of());
+        data.put("thing_version", runtimeConfig.getThingVersion());
+
+        publishStatus(StatusMethod.UPDATE_TOPO.methodName(),
+                UUID.randomUUID().toString(), UUID.randomUUID().toString(), data);
+        log.info("单兵模式飞行器休眠，已发送 update_topo（sub_devices 为空）: controllerSn={}",
+                runtimeConfig.getControllerSn());
+    }
+
+    /**
      * 发送 update_topo 上线报文。
      * <p>发送后等待 status_reply：
      * <ul>
@@ -224,7 +256,11 @@ public class PilotOnlineService {
      *
      * @return true 表示继续上线，false 表示停止上线
      */
-    /** 构造 update_topo 上线报文数据（Pilot 模式飞行器始终激活，sub_devices 始终包含飞行器） */
+    /**
+     * 构造 update_topo 上线报文数据。
+     * <p>sub_devices 跟随飞行器激活状态：激活时包含飞行器，休眠时为空列表。
+     * 唤醒（休眠→激活）后由 {@link #resendTopo()} 用本方法把飞行器重新挂回拓扑。</p>
+     */
     private Map<String, Object> buildUpdateTopoData() {
         RcModel controllerType = runtimeConfig.getControllerType();
         DroneModel droneType = runtimeConfig.getDroneType();
@@ -233,7 +269,6 @@ public class PilotOnlineService {
         // DJI update_topo: data 顶层包含网关设备的 domain（string）、type（int）、sub_type（int）、
         // device_secret（text）、nonce（text）、thing_version（text）
         // RC Plus 2 行业版差异（TC-ONLINE-016）：网关设备不上报 domain，子设备不上报 domain 和 index
-        // Pilot 模式飞行器始终激活，sub_devices 始终包含飞行器
         Map<String, Object> data = new LinkedHashMap<>();
         if (!isRcPlus2) {
             data.put("domain", String.valueOf(controllerType.domain()));
@@ -242,9 +277,9 @@ public class PilotOnlineService {
         data.put("sub_type", controllerType.subType());
         data.put("device_secret", "secret");
         data.put("nonce", "nonce");
-        data.put("sub_devices", List.of(
-                buildSubDeviceData(droneType, isRcPlus2)
-        ));
+        data.put("sub_devices", state.isDroneActivated()
+                ? List.of(buildSubDeviceData(droneType, isRcPlus2))
+                : List.of());
         data.put("thing_version", runtimeConfig.getThingVersion());
         return data;
     }
@@ -315,7 +350,9 @@ public class PilotOnlineService {
     }
 
     /**
-     * 发布 status 通道消息（sys/product/{sn}/status）。
+     * 发布 status 通道消息（thing/product/{sn}/status）。
+     * <p>Pilot 上云的拓扑上行固定走 thing/product 前缀，回复由平台发到
+     * sys/product/{sn}/status_reply（见 {@link PilotTopicSchema}）。</p>
      */
     private void publishStatus(String method, String tid, String bid, Map<String, Object> data) {
         Map<String, Object> envelope = new LinkedHashMap<>();
@@ -343,7 +380,7 @@ public class PilotOnlineService {
         // 相机索引随机型解析（TC-LIVE-026/TC-PAYLOAD-026）：与 drone OSD payloads 的 payload_index 同源。
         // 上线时尚未推流，镜头用默认 normal；之后 live_lens_change 由 LiveStreamSimulator 增量上报。
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put(StateField.LIVE_CAPACITY.fieldName(), LiveCapacityBuilder.forPilot(runtimeConfig, "normal"));
+        data.put(StateField.LIVE_CAPACITY.fieldName(), LiveCapacityBuilder.forPilot(runtimeConfig, state, "normal"));
 
         Map<String, Object> envelope = new LinkedHashMap<>();
         envelope.put("bid", UUID.randomUUID().toString());
@@ -364,7 +401,7 @@ public class PilotOnlineService {
      * <a href="https://developer.dji.com/doc/cloud-api-tutorial/cn/api-reference/pilot-to-cloud/mqtt/dji-rc-plus-2/properties.html">RC Plus 2 设备属性</a></p>
      * <p>核实依据：用户提供的 RC Plus 2 行业版设备属性列表（pushMode=1 字段集）</p>
      */
-    void publishControllerState() {
+    public void publishControllerState() {
         Map<String, Object> data = new LinkedHashMap<>();
 
         // dongle_infos — 4G Dongle 信息（pushMode=1, r）
@@ -446,7 +483,7 @@ public class PilotOnlineService {
      * </ul>
      * <p>找不到对应 Builder 时跳过 state 上报并记录警告（避免上报错误字段集）。</p>
      */
-    void publishDroneState() {
+    public void publishDroneState() {
         DroneModel droneType = runtimeConfig.getDroneType();
         DroneStateBuilder builder = null;
         for (DroneStateBuilder b : stateBuilders) {

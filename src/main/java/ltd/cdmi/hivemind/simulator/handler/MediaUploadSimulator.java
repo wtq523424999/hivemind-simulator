@@ -112,11 +112,11 @@ public class MediaUploadSimulator {
      * <p>模式与 {@link DockOnlineService#ensureReplyListeners} 一致。</p>
      */
     private void ensureReplyListeners() {
-        String dockSn = runtimeConfig.getDockSn();
+        String dockSn = runtimeConfig.getGatewaySn();
         if (dockSn.equals(registeredReplyDockSn)) {
             return;
         }
-        mqtt.addListener(dockTopicSchema.topic(dockTopicSchema.eventsReply(), dockSn), this::handleEventReply);
+        mqtt.addListener(dockTopicSchema.topic(dockTopicSchema.eventsReply(), runtimeConfig.getGatewaySn()), this::handleEventReply);
         registeredReplyDockSn = dockSn;
         log.info("MediaUploadSimulator 已注册 events_reply 监听器: dockSn={}", dockSn);
     }
@@ -324,13 +324,13 @@ public class MediaUploadSimulator {
         String bid = UUID.randomUUID().toString();
 
         EventEnvelope envelope = EventEnvelope.of(tid, bid, System.currentTimeMillis(),
-                method, data, runtimeConfig.getDockSn());
+                method, data, runtimeConfig.getGatewaySn());
 
         // 注册等待 future
         CompletableFuture<JsonNode> future = new CompletableFuture<>();
         pendingEventReplies.put(tid, future);
 
-        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getDockSn());
+        String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getGatewaySn());
         mqtt.publish(topic, MessageCodec.toJson(envelope));
 
         // 等待 events_reply

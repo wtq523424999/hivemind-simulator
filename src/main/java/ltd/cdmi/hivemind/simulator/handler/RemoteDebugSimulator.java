@@ -361,10 +361,10 @@ public class RemoteDebugSimulator {
             // rtk_calibration 需要 need_reply=1（DJI Dock3 cmd 文档明确），通用指令 need_reply=0
             envelope.put("need_reply", ServiceMethod.RTK_CALIBRATION.methodName().equals(method) ? 1 : 0);
             // DJI topic-definition 文档：gateway 是公共字段，所有消息都应包含
-            envelope.put("gateway", runtimeConfig.getDockSn());
+            envelope.put("gateway", runtimeConfig.getGatewaySn());
             envelope.put("method", method);
 
-            String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getDockSn());
+            String topic = dockTopicSchema.topic(dockTopicSchema.events(), runtimeConfig.getGatewaySn());
             mqtt.publishJson(topic, envelope);
             log.info("远程调试进度事件: method={}, bid={}, status={}, percent={}", method, bid, status, percent);
         } catch (Exception e) {

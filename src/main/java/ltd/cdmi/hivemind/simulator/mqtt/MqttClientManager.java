@@ -42,10 +42,12 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -162,8 +164,9 @@ public class MqttClientManager implements MqttCallbackExtended {
             options.setConnectionTimeout(3);
             options.setKeepAliveInterval(30);
             // 告知 broker 本客户端的遗嘱：设备下线（QoS 1）
-            // DJI 下线通过 update_topo 的空 sub_devices 列表体现，method 字段必须为 update_topo
-            String willPayload = "{\"method\":\"update_topo\",\"data\":{\"type\":3,\"sub_type\":0,\"sub_devices\":[],\"thing_version\":\"" + runtimeConfig.getThingVersion() + "\"}}";
+            // DJI 下线通过 update_topo 的空 sub_devices 列表体现，method 字段必须为 update_topo。
+            // 网关设备类型按当前接入模式取：机场上云为机场（domain=3），遥控器上云为遥控器（domain=2）。
+            String willPayload = buildWillPayload();
             TopicSchema schema = currentTopicSchema();
             options.setWill(
                     schema.topic(schema.status(), runtimeConfig.getGatewaySn()),
@@ -189,6 +192,31 @@ public class MqttClientManager implements MqttCallbackExtended {
         } catch (Exception e) {
             log.error("MQTT 连接初始化失败: {}", e.getMessage(), e);
             return DiagnosticCode.PLATFORM_HOST_UNREACHABLE;
+        }
+    }
+
+    /**
+     * 构造遗嘱报文（update_topo，空 sub_devices 表示设备下线）。
+     * <p>网关设备类型取自当前网关型号：机场上云 domain=3，遥控器上云 domain=2。
+     * 若固定写死机场类型，遥控器异常掉线时平台会收到一条"机场下线"，与已上线的遥控器拓扑不一致。</p>
+     */
+    String buildWillPayload() {
+        var gatewayType = runtimeConfig.getGatewayType();
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("domain", String.valueOf(gatewayType.domain()));
+        data.put("type", gatewayType.type());
+        data.put("sub_type", gatewayType.subType());
+        data.put("sub_devices", List.of());
+        data.put("thing_version", runtimeConfig.getThingVersion());
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("method", "update_topo");
+        payload.put("data", data);
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (Exception e) {
+            log.warn("遗嘱报文序列化失败，回退为机场类型: {}", e.getMessage());
+            return "{\"method\":\"update_topo\",\"data\":{\"type\":3,\"sub_type\":0,\"sub_devices\":[],\"thing_version\":\""
+                    + runtimeConfig.getThingVersion() + "\"}}";
         }
     }
 
@@ -268,41 +296,120 @@ public class MqttClientManager implements MqttCallbackExtended {
 
     @Override
     public void connectComplete(boolean reconnect, String serverURI) {
-        String gatewaySn = runtimeConfig.getGatewaySn();
         if (reconnect) {
             log.info("MQTT 已重连，重新订阅下行 topic");
         } else {
             log.info("MQTT 首次连接成功");
         }
-        // 订阅云→设备下行 topic（QoS 1）
-        // Pilot 模式网关为遥控器（controllerSn），Dock 模式网关为机场（dockSn）
-        TopicSchema schema = currentTopicSchema();
-        List<String> downTopics = new ArrayList<>();
-        downTopics.add(dockTopicSchema.topic(dockTopicSchema.services(), gatewaySn));
-        downTopics.add(dockTopicSchema.topic(dockTopicSchema.propertySet(), gatewaySn));
-        downTopics.add(dockTopicSchema.topic(dockTopicSchema.eventsReply(), gatewaySn));
-        downTopics.add(dockTopicSchema.topic(dockTopicSchema.requestsReply(), gatewaySn));
-        downTopics.add(schema.topic(schema.statusReply(), gatewaySn));
-        downTopics.add(dockTopicSchema.topic(dockTopicSchema.drcDown(), gatewaySn));
+        subscribeDownTopics();
+    }
+
+    /**
+     * 按当前网关身份订阅云→设备下行 topic（QoS 1）。
+     *
+     * <p>Pilot 模式网关为遥控器（controllerSn），Dock 模式网关为机场（dockSn）。
+     * 同时订阅两种网关 SN：接入模式可在运行时切换，未激活的那一路不会有设备发布，
+     * 但可保证切换后无需等待重连即可收到平台下发到新网关 SN 的指令。</p>
+     *
+     * @return 本次尝试订阅的 topic 列表（供调用方日志与测试断言）
+     */
+    private List<String> subscribeDownTopics() {
+        if (client == null || !client.isConnected()) {
+            log.debug("MQTT 未连接，跳过订阅");
+            return List.of();
+        }
+        List<String> downTopics = computeDownTopics();
         for (String topic : downTopics) {
             try {
-                client.subscribe(topic, 1);
+                subscribeTopic(topic);
                 log.debug("已订阅: {}", topic);
             } catch (Exception e) {
                 log.error("订阅失败: {} - {}", topic, e.getMessage());
             }
         }
+        return downTopics;
+    }
+
+    /**
+     * 计算当前网关身份下需要订阅的下行 topic 集合。
+     *
+     * <p>抽成独立方法（不依赖连接状态）便于单测断言"切换模式后订阅集确实变了"，
+     * 而不需要真实 broker。</p>
+     */
+    List<String> computeDownTopics() {
+        TopicSchema schema = currentTopicSchema();
+        List<String> downTopics = new ArrayList<>();
+        for (String gatewaySn : gatewaySnCandidates()) {
+            downTopics.add(dockTopicSchema.topic(dockTopicSchema.services(), gatewaySn));
+            downTopics.add(dockTopicSchema.topic(dockTopicSchema.propertySet(), gatewaySn));
+            downTopics.add(dockTopicSchema.topic(dockTopicSchema.eventsReply(), gatewaySn));
+            downTopics.add(dockTopicSchema.topic(dockTopicSchema.requestsReply(), gatewaySn));
+            downTopics.add(schema.topic(schema.statusReply(), gatewaySn));
+            downTopics.add(dockTopicSchema.topic(dockTopicSchema.drcDown(), gatewaySn));
+        }
+        return downTopics;
+    }
+
+    /**
+     * 订阅单个 topic（QoS 1）。抽成独立方法便于测试观察订阅集，
+     * 也把所有 Paho 订阅调用收敛到一处。
+     */
+    void subscribeTopic(String topic) throws MqttException {
+        client.subscribe(topic, 1);
+    }
+
+    /**
+     * 按当前网关身份重新订阅下行 topic（幂等，可在连接保持期间反复调用）。
+     *
+     * <p>使用场景：接入模式（Dock ↔ Pilot）或网关 SN 在<b>已连接状态</b>下发生变化。
+     * 此时 MQTT 连接不会断开，{@link #connectComplete} 不会被触发，而订阅集是按旧 SN
+     * 算出来的——平台下发到新 SN 的 {@code services} / {@code property/set} / {@code drc/down}
+     * 等消息将无人接收。切换模式或改 SN 后必须调用本方法刷新订阅。</p>
+     *
+     * <p>为什么是"重订阅"而不是"先退订旧 topic 再订阅新 topic"：
+     * MQTT subscribe 对同一 topic 是幂等的（Paho 按 topic 覆盖，不产生重复投递），
+     * 而按历史集合退订需要保存状态，SN 多次切换时容易漏删、误删仍需要的 topic。
+     * 保留机场 SN 的订阅也与 {@link #gatewaySnCandidates()} 的既有设计一致
+     * （切回原模式时无需再次重订阅）。</p>
+     *
+     * @return 本次重新订阅的 topic 数量；MQTT 未连接时返回 0（连接建立时会自动订阅）
+     */
+    public int resubscribe() {
+        if (!isConnected()) {
+            log.debug("MQTT 未连接，无需重订阅（连接建立时会自动订阅）");
+            return 0;
+        }
+        List<String> topics = subscribeDownTopics();
+        log.info("网关身份已变化，按当前网关重新订阅下行 topic: {} 个（网关候选 {}）",
+                topics.size(), gatewaySnCandidates());
+        return topics.size();
+    }
+
+    /** 当前可能的网关 SN 集合（机场 + 遥控器），用于下行 topic 订阅。 */
+    private List<String> gatewaySnCandidates() {
+        List<String> sns = new ArrayList<>(2);
+        sns.add(runtimeConfig.getGatewaySn());
+        String dockSn = runtimeConfig.getDockSn();
+        String controllerSn = runtimeConfig.getControllerSn();
+        if (!sns.contains(dockSn)) {
+            sns.add(dockSn);
+        }
+        if (!sns.contains(controllerSn)) {
+            sns.add(controllerSn);
+        }
+        return sns;
     }
 
     /**
      * 获取当前模式对应的 TopicSchema。
-     * <p>Pilot 模式（RC Plus 2）使用 {@link PilotTopicSchema}（status/statusReply 走 thing/product 通道），
-     * 其他模式使用 {@link DockTopicSchema}（status/statusReply 走 sys/product 通道）。
+     * <p>Pilot 模式使用 {@link PilotTopicSchema}（拓扑上行 thing/product/{sn}/status，
+     * 回复下行 sys/product/{sn}/status_reply），其他模式使用 {@link DockTopicSchema}
+     * （status/statusReply 均走 sys/product 通道）。
      * <p>osd/state/services/drc 等通道两种模式模板一致，统一用 {@link DockTopicSchema}。
      */
     private TopicSchema currentTopicSchema() {
         if (runtimeConfig.getDeviceMode() == DeviceMode.PILOT) {
-            return new PilotTopicSchema(runtimeConfig.getControllerType());
+            return new PilotTopicSchema();
         }
         return dockTopicSchema;
     }
@@ -320,17 +427,66 @@ public class MqttClientManager implements MqttCallbackExtended {
         log.debug("收到消息 topic={}, payload={}", topic, payload);
         addLog("recv", topic, payload);
 
-        // 按 topic 精确匹配分发
+        // 先按 topic 精确匹配，未命中再回退到网关无关模板。
+        // 两者用同一集合去重：同一条消息即使同时符合精确 topic 与某个别名，也只投递一次。
+        Set<MqttMessageListener> delivered = Collections.newSetFromMap(new IdentityHashMap<>());
         List<MqttMessageListener> topicListeners = listeners.get(topic);
         if (topicListeners != null) {
             for (MqttMessageListener listener : topicListeners) {
-                try {
-                    listener.onMessage(topic, payload);
-                } catch (Exception e) {
-                    log.error("监听器处理消息异常 topic={}: {}", topic, e.getMessage(), e);
-                }
+                deliver(listener, topic, payload, null, delivered);
             }
         }
+        if (!belongsToThisDevice(topic)) {
+            log.debug("忽略非本模拟器设备的 topic: {}", topic);
+            return;
+        }
+        for (Map.Entry<String, CopyOnWriteArrayList<MqttMessageListener>> entry : listeners.entrySet()) {
+            String pattern = entry.getKey();
+            if (pattern.indexOf('+') < 0 && pattern.indexOf('#') < 0) {
+                continue;
+            }
+            if (!topicMatches(pattern, topic)) {
+                continue;
+            }
+            for (MqttMessageListener listener : entry.getValue()) {
+                deliver(listener, topic, payload, pattern, delivered);
+            }
+        }
+    }
+
+    private void deliver(MqttMessageListener listener, String topic, String payload,
+                         String pattern, Set<MqttMessageListener> delivered) {
+        if (!delivered.add(listener)) {
+            return;
+        }
+        try {
+            listener.onMessage(topic, payload);
+        } catch (Throwable t) {
+            // 捕获 Throwable：监听器在 Paho 回调线程执行，逃逸的 Error 会中断该线程并导致连接被判失败断开
+            if (pattern == null) {
+                log.error("监听器处理消息异常 topic={}: {}", topic, t.getMessage(), t);
+            } else {
+                log.error("监听器处理消息异常 topic={}, pattern={}: {}", topic, pattern, t.getMessage(), t);
+            }
+        }
+    }
+
+    /**
+     * 通配回退分发前的归属校验：{@code thing/product/{sn}/...} 或 {@code sys/product/{sn}/...}
+     * 的 sn 必须是本模拟器已知设备（网关机场、网关遥控器或飞行器）。
+     * <p>否则一个实例会响应同一 broker 上其他设备（如另一台模拟器）的指令。</p>
+     */
+    private boolean belongsToThisDevice(String topic) {
+        String[] parts = topic.split("/", -1);
+        if (parts.length < 3
+                || !("thing".equals(parts[0]) || "sys".equals(parts[0]))
+                || !"product".equals(parts[1])) {
+            return true;
+        }
+        String sn = parts[2];
+        return sn.equals(runtimeConfig.getDockSn())
+                || sn.equals(runtimeConfig.getControllerSn())
+                || sn.equals(runtimeConfig.getDroneSn());
     }
 
     @Override
@@ -342,12 +498,71 @@ public class MqttClientManager implements MqttCallbackExtended {
 
     /**
      * 注册消息监听器。topic 必须是完整 topic（非模板），订阅由本管理器统一管理。
+     * <p>同时按"网关无关"形式额外登记一份（把产品 topic 中的设备 SN 段替换为 {@code +}）：
+     * 接入模式（机场上云 / 遥控器上云）可在运行时切换，网关 SN 随之在 dockSn 与 controllerSn
+     * 之间变化；只按固定 SN 登记会导致切换模式后平台下发到新网关 SN 的指令无人处理。</p>
      * @param topic 完整 topic
      * @param listener 监听器
      */
     public void addListener(String topic, MqttMessageListener listener) {
-        listeners.computeIfAbsent(topic, k -> new CopyOnWriteArrayList<>()).add(listener);
+        addListenerOnce(topic, listener);
+        String alias = gatewayAgnosticTopic(topic);
+        if (alias != null) {
+            addListenerOnce(alias, listener);
+        }
         log.debug("已注册监听器 topic={}", topic);
+    }
+
+    /** 同一 topic 下同一监听器只登记一份，避免 SN 变化后重复注册导致重复处理 */
+    private void addListenerOnce(String topic, MqttMessageListener listener) {
+        CopyOnWriteArrayList<MqttMessageListener> list =
+                listeners.computeIfAbsent(topic, k -> new CopyOnWriteArrayList<>());
+        if (!list.contains(listener)) {
+            list.add(listener);
+        }
+    }
+
+    /**
+     * 把 {@code thing/product/{sn}/...} 或 {@code sys/product/{sn}/...} 的 SN 段替换为 {@code +}，
+     * 作为同一监听器的网关无关别名键；非产品 topic 返回 null。
+     */
+    static String gatewayAgnosticTopic(String topic) {
+        String[] parts = topic.split("/", -1);
+        if (parts.length >= 3
+                && ("thing".equals(parts[0]) || "sys".equals(parts[0]))
+                && "product".equals(parts[1])
+                && !SN_WILDCARD.equals(parts[2])) {
+            parts[2] = SN_WILDCARD;
+            return String.join("/", parts);
+        }
+        return null;
+    }
+
+    /** MQTT 单层通配符：匹配 topic 中的任意一段（网关 SN） */
+    public static final String SN_WILDCARD = "+";
+
+    /**
+     * MQTT topic 通配匹配：支持 {@code +}（单层）与 {@code #}（多层，仅末尾）。
+     * <p>仅用于监听器分发；订阅仍由 {@link #connectComplete} 按当前网关精确订阅。</p>
+     */
+    static boolean topicMatches(String pattern, String topic) {
+        if (pattern.equals(topic)) {
+            return true;
+        }
+        String[] p = pattern.split("/", -1);
+        String[] t = topic.split("/", -1);
+        for (int i = 0; i < p.length; i++) {
+            if ("#".equals(p[i])) {
+                return i == p.length - 1;
+            }
+            if (i >= t.length) {
+                return false;
+            }
+            if (!"+".equals(p[i]) && !p[i].equals(t[i])) {
+                return false;
+            }
+        }
+        return p.length == t.length;
     }
 
     /**

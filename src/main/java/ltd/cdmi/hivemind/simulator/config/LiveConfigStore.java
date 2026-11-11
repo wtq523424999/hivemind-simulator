@@ -69,19 +69,29 @@ public class LiveConfigStore {
      * 环境变量 SIMULATOR_CONFIG_DIR → 系统属性 simulator.config.dir → ${user.home}/.hivemind-simulator
      */
     private Path resolveConfigPath() {
-        String dir = System.getenv(ENV_CONFIG_DIR);
-        if (dir != null && !dir.isBlank()) {
-            return Path.of(dir, CONFIG_FILE);
-        }
-        dir = System.getProperty(PROP_CONFIG_DIR);
-        if (dir != null && !dir.isBlank()) {
-            return Path.of(dir, CONFIG_FILE);
-        }
-        return Path.of(System.getProperty("user.home"), ".hivemind-simulator", CONFIG_FILE);
+        return resolveConfigDir().resolve(CONFIG_FILE);
     }
 
     /**
-     * 持久化的配置快照（直播推流 + 媒体上传 + 机场位置 + Pilot 上云 HTTP/WS 配置 + 唯一 SN 模式的型号与 SN）。
+     * 解析配置目录（供其他持久化组件复用，保证 live-config.json 与 fleet.json 等文件同目录）。
+     * <p>优先级：环境变量 {@code SIMULATOR_CONFIG_DIR} → 系统属性 {@code simulator.config.dir}
+     * → {@code ${user.home}/.hivemind-simulator}。</p>
+     */
+    public static Path resolveConfigDir() {
+        String dir = System.getenv(ENV_CONFIG_DIR);
+        if (dir != null && !dir.isBlank()) {
+            return Path.of(dir);
+        }
+        dir = System.getProperty(PROP_CONFIG_DIR);
+        if (dir != null && !dir.isBlank()) {
+            return Path.of(dir);
+        }
+        return Path.of(System.getProperty("user.home"), ".hivemind-simulator");
+    }
+
+    /**
+     * 持久化的配置快照（直播推流 + 媒体上传 + 机场位置 + Pilot 上云 HTTP/WS 配置 + 唯一 SN 模式的型号与 SN
+     * + 接入模式与遥控器机型）。
      *
      * @param realPushEnabled 是否启用真实推流
      * @param ffmpegPath      ffmpeg 可执行文件路径
@@ -98,13 +108,51 @@ public class LiveConfigStore {
      * @param droneType      唯一 SN 模式：飞行器型号枚举名（默认模式为 null，不序列化）
      * @param dockSn         唯一 SN 模式：机场 SN（默认模式为 null，不序列化）
      * @param droneSn        唯一 SN 模式：飞行器 SN（默认模式为 null，不序列化）
+     * @param deviceMode     接入模式（DOCK / PILOT）。持久化后容器重启仍以遥控器为网关，
+     *                       否则多实例远程启用会退化为机场模式、遥控器不再上线
+     * @param controllerType 遥控器型号枚举名（PILOT 模式网关机型，DOCK 模式也保留以便切回）
+     * @param selectedPayload 遥控器上云选中的负载枚举名（可空，空表示按机型默认主相机）
      */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record LiveConfig(boolean realPushEnabled, String ffmpegPath, String videoDir, String mediaDir,
                               double locationLatitude, double locationLongitude, double locationHeight,
                               String pilotHttpBaseUrl, String pilotHttpToken, String pilotWsUrl, String pilotWsToken,
                               String dockType, String droneType, String dockSn, String droneSn,
-                              String dockSnOverride, String droneSnOverride) {
+                              String dockSnOverride, String droneSnOverride,
+                              String controllerSnOverride,
+                              String deviceMode, String controllerType, String selectedPayload) {
+
+        /**
+         * 接入模式持久化引入前的 18 字段兼容构造器（deviceMode/controllerType/selectedPayload 为 null）。
+         */
+        public LiveConfig(boolean realPushEnabled, String ffmpegPath, String videoDir, String mediaDir,
+                          double locationLatitude, double locationLongitude, double locationHeight,
+                          String pilotHttpBaseUrl, String pilotHttpToken, String pilotWsUrl, String pilotWsToken,
+                          String dockType, String droneType, String dockSn, String droneSn,
+                          String dockSnOverride, String droneSnOverride,
+                          String controllerSnOverride) {
+            this(realPushEnabled, ffmpegPath, videoDir, mediaDir,
+                    locationLatitude, locationLongitude, locationHeight,
+                    pilotHttpBaseUrl, pilotHttpToken, pilotWsUrl, pilotWsToken,
+                    dockType, droneType, dockSn, droneSn,
+                    dockSnOverride, droneSnOverride, controllerSnOverride,
+                    null, null, null);
+        }
+
+        /**
+         * 遥控器 SN 覆盖引入前的 17 字段兼容构造器（controllerSnOverride 为 null）。
+         */
+        public LiveConfig(boolean realPushEnabled, String ffmpegPath, String videoDir, String mediaDir,
+                          double locationLatitude, double locationLongitude, double locationHeight,
+                          String pilotHttpBaseUrl, String pilotHttpToken, String pilotWsUrl, String pilotWsToken,
+                          String dockType, String droneType, String dockSn, String droneSn,
+                          String dockSnOverride, String droneSnOverride) {
+            this(realPushEnabled, ffmpegPath, videoDir, mediaDir,
+                    locationLatitude, locationLongitude, locationHeight,
+                    pilotHttpBaseUrl, pilotHttpToken, pilotWsUrl, pilotWsToken,
+                    dockType, droneType, dockSn, droneSn,
+                    dockSnOverride, droneSnOverride, null);
+        }
 
         /**
          * 旧格式兼容构造器（唯一 SN 模式引入前的 11 字段格式，sn 字段为 null）。
@@ -116,7 +164,7 @@ public class LiveConfigStore {
             this(realPushEnabled, ffmpegPath, videoDir, mediaDir,
                     locationLatitude, locationLongitude, locationHeight,
                     pilotHttpBaseUrl, pilotHttpToken, pilotWsUrl, pilotWsToken,
-                    null, null, null, null, null, null);
+                    null, null, null, null, null, null, null);
         }
 
         /**
@@ -129,7 +177,7 @@ public class LiveConfigStore {
             this(realPushEnabled, ffmpegPath, videoDir, mediaDir,
                     locationLatitude, locationLongitude, locationHeight,
                     pilotHttpBaseUrl, pilotHttpToken, pilotWsUrl, pilotWsToken,
-                    dockType, droneType, dockSn, droneSn, null, null);
+                    dockType, droneType, dockSn, droneSn, null, null, null);
         }
     }
 
@@ -172,12 +220,49 @@ public class LiveConfigStore {
      * @param droneSn        唯一 SN 模式：飞行器 SN（默认模式传 null）
      * @param dockSnOverride SN 手动覆盖：机场 SN（未覆盖传 null，不写入文件）
      * @param droneSnOverride SN 手动覆盖：飞行器 SN（未覆盖传 null）
+     * @param controllerSnOverride SN 手动覆盖：遥控器 SN（未覆盖传 null，单兵模式网关身份）
+     */
+    /**
+     * 兼容重载：不含遥控器 SN 覆盖（等价于 controllerSnOverride=null）。
      */
     public void save(boolean realPushEnabled, String ffmpegPath, String videoDir, String mediaDir,
                      double locationLatitude, double locationLongitude, double locationHeight,
                      String pilotHttpBaseUrl, String pilotHttpToken, String pilotWsUrl, String pilotWsToken,
                      String dockType, String droneType, String dockSn, String droneSn,
                      String dockSnOverride, String droneSnOverride) {
+        save(realPushEnabled, ffmpegPath, videoDir, mediaDir,
+                locationLatitude, locationLongitude, locationHeight,
+                pilotHttpBaseUrl, pilotHttpToken, pilotWsUrl, pilotWsToken,
+                dockType, droneType, dockSn, droneSn,
+                dockSnOverride, droneSnOverride, null);
+    }
+
+    public void save(boolean realPushEnabled, String ffmpegPath, String videoDir, String mediaDir,
+                     double locationLatitude, double locationLongitude, double locationHeight,
+                     String pilotHttpBaseUrl, String pilotHttpToken, String pilotWsUrl, String pilotWsToken,
+                     String dockType, String droneType, String dockSn, String droneSn,
+                     String dockSnOverride, String droneSnOverride, String controllerSnOverride) {
+        save(realPushEnabled, ffmpegPath, videoDir, mediaDir,
+                locationLatitude, locationLongitude, locationHeight,
+                pilotHttpBaseUrl, pilotHttpToken, pilotWsUrl, pilotWsToken,
+                dockType, droneType, dockSn, droneSn,
+                dockSnOverride, droneSnOverride, controllerSnOverride,
+                null, null, null);
+    }
+
+    /**
+     * 写入完整配置快照（含接入模式与遥控器机型）。
+     *
+     * @param deviceMode      接入模式（DOCK / PILOT），null 表示不写入（按 DOCK 处理）
+     * @param controllerType  遥控器型号枚举名
+     * @param selectedPayload 遥控器上云选中的负载枚举名（可空）
+     */
+    public void save(boolean realPushEnabled, String ffmpegPath, String videoDir, String mediaDir,
+                     double locationLatitude, double locationLongitude, double locationHeight,
+                     String pilotHttpBaseUrl, String pilotHttpToken, String pilotWsUrl, String pilotWsToken,
+                     String dockType, String droneType, String dockSn, String droneSn,
+                     String dockSnOverride, String droneSnOverride, String controllerSnOverride,
+                     String deviceMode, String controllerType, String selectedPayload) {
         try {
             Files.createDirectories(configPath.getParent());
             LiveConfig config = new LiveConfig(realPushEnabled,
@@ -190,7 +275,8 @@ public class LiveConfigStore {
                     pilotWsUrl != null ? pilotWsUrl : "",
                     pilotWsToken != null ? pilotWsToken : "",
                     dockType, droneType, dockSn, droneSn,
-                    dockSnOverride, droneSnOverride);
+                    dockSnOverride, droneSnOverride, controllerSnOverride,
+                    deviceMode, controllerType, selectedPayload);
             String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(config);
             Files.writeString(configPath, json, StandardCharsets.UTF_8);
             log.debug("配置已持久化: {}", configPath);
