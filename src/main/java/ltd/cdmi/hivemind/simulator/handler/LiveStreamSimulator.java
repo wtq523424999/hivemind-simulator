@@ -366,6 +366,17 @@ public class LiveStreamSimulator {
         String videoIndex = parts[2];           // 如 normal-0
         String videoTypeName = videoIndex.split("-")[0];  // 如 normal
 
+        // 1581F6Q8D241P00BFH3Q/99-0-0/normal-0 指定使用 drone_20261010_152448_741.mkv
+        if ("1581F6Q8D241P00BFH3Q".equals(parts[0])
+                && "99-0-0".equals(cameraIndex)
+                && "normal".equals(videoTypeName)) {
+            String namedFile = Path.of(dir, "drone_20261010_152448_741.mkv").toString();
+            if (java.nio.file.Files.exists(java.nio.file.Path.of(namedFile))) {
+                return namedFile;
+            }
+            log.info("指定视频不存在，回退默认查找: {}", namedFile);
+        }
+
         // 优先查找 {camera_index}-{video_type}.mp4
         String primaryFile = Path.of(dir, cameraIndex + "-" + videoTypeName + ".mp4").toString();
         if (java.nio.file.Files.exists(java.nio.file.Path.of(primaryFile))) {
