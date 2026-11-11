@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * OSD 构建器边界情况单元测试。
  * <p>覆盖 wind_speed / batteryPercent / windDirection 在边界值下的 OSD 输出正确性，
  * 以及 DeviceState 字段默认值验证。
- * <p>核实依据：DJI M30 properties 文档 wind_speed 单位 0.1 m/s（上报值 ×10 转换），
+ * <p>核实依据：DJI Dock properties 文档 wind_speed 单位为「米每秒 / m/s」，float，直接上报不做换算；
  * capacity_percent 单位 %，wind_direction 枚举 1-8（1=正北…8=西北）。
  */
 class OsdBoundaryTest {
@@ -139,13 +139,13 @@ class OsdBoundaryTest {
         }
 
         @Test
-        @DisplayName("droneWindSpeed=99.9 时飞行器 OSD wind_speed=999（极大值边界）")
+        @DisplayName("droneWindSpeed=99.9 时飞行器 OSD wind_speed=99.9（极大值边界，不做换算）")
         void droneWindSpeedLarge() {
             M4DDroneOsdBuilder builder = new M4DDroneOsdBuilder();
             Map<String, Object> osd = builder.buildDroneOsd(
                     ctxWith(3.0, 99.9, 100, 1));
-            assertEquals(999.0, osd.get("wind_speed"),
-                    "droneWindSpeed=99.9 时飞行器 wind_speed 应为 999（×10 转换）");
+            assertEquals(99.9, osd.get("wind_speed"),
+                    "droneWindSpeed=99.9 时飞行器 wind_speed 应为 99.9 m/s（直接上报）");
         }
 
         @Test
@@ -159,17 +159,17 @@ class OsdBoundaryTest {
         }
 
         @Test
-        @DisplayName("windSpeed=99.9 时机场 OSD wind_speed=999（极大值边界）")
+        @DisplayName("windSpeed=99.9 时机场 OSD wind_speed=99.9（极大值边界，不做换算）")
         void dockWindSpeedLarge() {
             Dock3OsdBuilder builder = new Dock3OsdBuilder();
             List<Map<String, Object>> messages = builder.buildDockOsd(
                     ctxWith(99.9, 8.0, 100, 1));
-            assertEquals(999.0, findFieldInDockOsd(messages, "wind_speed"),
-                    "windSpeed=99.9 时机场 wind_speed 应为 999（×10 转换）");
+            assertEquals(99.9, findFieldInDockOsd(messages, "wind_speed"),
+                    "windSpeed=99.9 时机场 wind_speed 应为 99.9 m/s（直接上报）");
         }
 
         @Test
-        @DisplayName("droneWindSpeed=0 + windSpeed=10 时飞行器=0 机场=100（独立边界）")
+        @DisplayName("droneWindSpeed=0 + windSpeed=10 时飞行器=0 机场=10（独立边界）")
         void droneAndDockIndependentAtZeroBoundary() {
             M4DDroneOsdBuilder droneBuilder = new M4DDroneOsdBuilder();
             Dock3OsdBuilder dockBuilder = new Dock3OsdBuilder();
@@ -180,8 +180,8 @@ class OsdBoundaryTest {
 
             assertEquals(0.0, droneOsd.get("wind_speed"),
                     "飞行器 wind_speed 应为 0（droneWindSpeed=0）");
-            assertEquals(100.0, findFieldInDockOsd(dockMessages, "wind_speed"),
-                    "机场 wind_speed 应为 100（windSpeed=10 ×10）");
+            assertEquals(10.0, findFieldInDockOsd(dockMessages, "wind_speed"),
+                    "机场 wind_speed 应为 10 m/s（直接上报）");
         }
     }
 

@@ -82,6 +82,10 @@ public class HmsSimulator {
         WIND_HIGH("0x160900BF", 2, 1, DeviceScope.DOCK),
         /** 雨量过大，无法执行飞行任务（机场告警，及时性） */
         RAIN_HEAVY("0x19114800", 2, 1, DeviceScope.DOCK),
+        /** 设备供电电源断开（机场告警） */
+        POWER_LOST("0x19113803", 2, 0, DeviceScope.DOCK),
+        /** 低温预警（≤-20℃），机场告警 */
+        TEMPERATURE_LOW("0x19113D27", 1, 0, DeviceScope.DOCK),
         /** 图传信号弱（机场告警，及时性） */
         SIGNAL_WEAK("0x17000004", 1, 1, DeviceScope.DOCK),
         /** 无图传信号（机场告警，及时性） */

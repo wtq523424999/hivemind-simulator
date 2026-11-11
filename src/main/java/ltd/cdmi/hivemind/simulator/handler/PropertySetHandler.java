@@ -23,6 +23,7 @@ import ltd.cdmi.dji.cloudapi.sdk.telemetry.StateField;
 import ltd.cdmi.hivemind.simulator.config.RuntimeConfig;
 import ltd.cdmi.hivemind.simulator.config.SimulatorProperties;
 import ltd.cdmi.hivemind.simulator.device.DeviceState;
+import ltd.cdmi.hivemind.simulator.device.DockEnvStateStore;
 import ltd.cdmi.hivemind.simulator.device.StatePushService;
 import ltd.cdmi.dji.cloudapi.sdk.model.DockModel;
 import ltd.cdmi.hivemind.simulator.diagnostic.CoverageRecorder;
@@ -57,6 +58,7 @@ public class PropertySetHandler {
     private final RuntimeConfig runtimeConfig;
     private final DockTopicSchema dockTopicSchema;
     private final StatePushService statePushService;
+    private final DockEnvStateStore envStateStore;
 
     public PropertySetHandler(SimulatorProperties props, MqttClientManager mqtt,
                               DeviceState state, ObjectMapper objectMapper,
@@ -64,7 +66,8 @@ public class PropertySetHandler {
                               CoverageRecorder coverageRecorder,
                               RuntimeConfig runtimeConfig,
                               DockTopicSchema dockTopicSchema,
-                              StatePushService statePushService) {
+                              StatePushService statePushService,
+                              DockEnvStateStore envStateStore) {
         this.props = props;
         this.mqtt = mqtt;
         this.state = state;
@@ -74,6 +77,7 @@ public class PropertySetHandler {
         this.runtimeConfig = runtimeConfig;
         this.dockTopicSchema = dockTopicSchema;
         this.statePushService = statePushService;
+        this.envStateStore = envStateStore;
     }
 
     @PostConstruct
@@ -146,6 +150,71 @@ public class PropertySetHandler {
                     stateChanges.put(StateField.USER_EXPERIENCE_IMPROVEMENT.fieldName(), val);
                 }
                 log.info("属性设置 user_experience_improvement={}", val);
+            }
+            // 环境参数：这些属性在 DJI 文档里是 pushMode=0（由 OSD 带出），平台侧仍然会下发 set。
+            // 若只回 result=0 而不落到 DeviceState，平台会显示"设置成功"但机场数据毫无变化，
+            // 联调时无法判断是平台没发、还是模拟器吞了——因此这里真实更新状态并落盘。
+            boolean envChanged = false;
+            if (properties.containsKey("temperature")) {
+                double val = ((Number) properties.get("temperature")).doubleValue();
+                if (state.getDockTemperature() != val) {
+                    state.setDockTemperature(val);
+                    envChanged = true;
+                }
+                log.info("属性设置 temperature={}", val);
+            }
+            if (properties.containsKey("humidity")) {
+                double val = ((Number) properties.get("humidity")).doubleValue();
+                if (state.getDockHumidity() != val) {
+                    state.setDockHumidity(val);
+                    envChanged = true;
+                }
+                log.info("属性设置 humidity={}", val);
+            }
+            if (properties.containsKey("wind_speed")) {
+                // wind_speed 单位 m/s（DJI Dock properties 文档），与 DeviceState 内部单位一致，不做换算
+                double val = ((Number) properties.get("wind_speed")).doubleValue();
+                if (state.getWindSpeed() != val) {
+                    state.setWindSpeed(val);
+                    envChanged = true;
+                }
+                log.info("属性设置 wind_speed={} m/s", val);
+            }
+            if (properties.containsKey("environment_temperature")) {
+                double val = ((Number) properties.get("environment_temperature")).doubleValue();
+                if (state.getEnvironmentTemperature() != val) {
+                    state.setEnvironmentTemperature(val);
+                    envChanged = true;
+                }
+                log.info("属性设置 environment_temperature={}", val);
+            }
+            if (properties.containsKey("rainfall")) {
+                int val = ((Number) properties.get("rainfall")).intValue();
+                if (state.getRainfall() != val) {
+                    state.setRainfall(val);
+                    envChanged = true;
+                }
+                log.info("属性设置 rainfall={}", val);
+            }
+            if (properties.containsKey("cover_state")) {
+                boolean val = ((Number) properties.get("cover_state")).intValue() != 0;
+                if (state.isCoverOpen() != val) {
+                    state.setCoverOpen(val);
+                    envChanged = true;
+                }
+                log.info("属性设置 cover_state={}", properties.get("cover_state"));
+            }
+            if (properties.containsKey("emergency_stop_state")) {
+                boolean val = ((Number) properties.get("emergency_stop_state")).intValue() != 0;
+                if (state.isEmergencyStopPressed() != val) {
+                    state.setEmergencyStopPressed(val);
+                    envChanged = true;
+                }
+                log.info("属性设置 emergency_stop_state={}", properties.get("emergency_stop_state"));
+            }
+            if (envChanged) {
+                // 环境参数是 pushMode=0，只在下次 OSD 带出；单独落盘保证重启后仍可复现
+                envStateStore.persist();
             }
             // accessMode=r 的属性（如 air_conditioner_state）：仅回复，不更新本地状态
             statePushService.publishGatewayState(stateChanges);

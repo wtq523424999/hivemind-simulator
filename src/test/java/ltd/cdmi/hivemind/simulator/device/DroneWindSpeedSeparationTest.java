@@ -66,18 +66,18 @@ class DroneWindSpeedSeparationTest {
     }
 
     @Test
-    @DisplayName("飞行器 OSD wind_speed 用 droneWindSpeed（=80，不是机场 windSpeed=30）")
+    @DisplayName("飞行器 OSD wind_speed 用 droneWindSpeed（=8.0，不是机场 windSpeed=3.0）")
     void droneOsdWindSpeedUsesDroneWindSpeed() {
         M4DDroneOsdBuilder builder = new M4DDroneOsdBuilder();
         Map<String, Object> osd = builder.buildDroneOsd(ctx(DroneModel.M4D));
 
-        // DJI 文档 wind_speed 单位 0.1 m/s，上报值 = droneWindSpeed * 10 = 80
-        assertEquals(80.0, osd.get("wind_speed"),
-                "飞行器 OSD wind_speed 应为 droneWindSpeed * 10 = 80，不是机场 windSpeed * 10 = 30");
+        // wind_speed 单位 m/s，直接上报 = droneWindSpeed = 8.0
+        assertEquals(8.0, osd.get("wind_speed"),
+                "飞行器 OSD wind_speed 应为 droneWindSpeed = 8.0，不是机场 windSpeed = 3.0");
     }
 
     @Test
-    @DisplayName("机场 OSD wind_speed 用 windSpeed（=30，不是飞行器 droneWindSpeed=80）")
+    @DisplayName("机场 OSD wind_speed 用 windSpeed（=3.0，不是飞行器 droneWindSpeed=8.0）")
     void dockOsdWindSpeedUsesWindSpeed() {
         Dock3OsdBuilder builder = new Dock3OsdBuilder();
         List<Map<String, Object>> osdMessages = builder.buildDockOsd(ctx(DroneModel.M4D));
@@ -91,9 +91,9 @@ class DroneWindSpeedSeparationTest {
             }
         }
         assertNotNull(windSpeed, "机场 OSD 应包含 wind_speed 字段");
-        // DJI 文档 wind_speed 单位 0.1 m/s，上报值 = windSpeed * 10 = 30
-        assertEquals(30.0, windSpeed,
-                "机场 OSD wind_speed 应为 windSpeed * 10 = 30，不是飞行器 droneWindSpeed * 10 = 80");
+        // wind_speed 单位 m/s，直接上报 = windSpeed = 3.0
+        assertEquals(3.0, windSpeed,
+                "机场 OSD wind_speed 应为 windSpeed = 3.0，不是飞行器 droneWindSpeed = 8.0");
     }
 
     @Test
@@ -106,10 +106,10 @@ class DroneWindSpeedSeparationTest {
         Map<String, Object> droneOsd = droneBuilder.buildDroneOsd(ctx);
         List<Map<String, Object>> dockOsdMessages = dockBuilder.buildDockOsd(ctx);
 
-        // 飞行器 wind_speed = 80（droneWindSpeed * 10）
-        assertEquals(80.0, droneOsd.get("wind_speed"), "飞行器 wind_speed 应反映 droneWindSpeed");
+        // 飞行器 wind_speed = 8.0（droneWindSpeed）
+        assertEquals(8.0, droneOsd.get("wind_speed"), "飞行器 wind_speed 应反映 droneWindSpeed");
 
-        // 机场 wind_speed = 30（windSpeed * 10）
+        // 机场 wind_speed = 3.0（windSpeed）
         Object dockWindSpeed = null;
         for (Map<String, Object> msg : dockOsdMessages) {
             if (msg.containsKey("wind_speed")) {
@@ -117,7 +117,7 @@ class DroneWindSpeedSeparationTest {
                 break;
             }
         }
-        assertEquals(30.0, dockWindSpeed, "机场 wind_speed 应反映 windSpeed");
+        assertEquals(3.0, dockWindSpeed, "机场 wind_speed 应反映 windSpeed");
 
         // 两者不同，证明独立
         assertNotEquals(droneOsd.get("wind_speed"), dockWindSpeed,

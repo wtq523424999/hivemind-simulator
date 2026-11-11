@@ -422,9 +422,36 @@ public class WaylineTaskSimulator {
     }
 
     /**
+     * 执行设备端异常条件检查，命中时联动上报 HMS。
+     * <p>真实机场在拒绝执行的同时会通过 HMS 上报环境异常，两条通道成对出现。</p>
+     *
+     * @param stage  检查阶段
+     * @param method 触发检查的命令名（仅用于日志）
+     * @return 判定结果；调用方应据此返回 {@code result=resultCode}
+     */
+    private AbnormalConditionChecker.BlockResult checkAbnormal(
+            AbnormalConditionChecker.Stage stage, String method) {
+        AbnormalConditionChecker.BlockResult result = AbnormalConditionChecker.check(state, stage);
+        if (!result.blocked()) {
+            return result;
+        }
+        log.warn("任务被异常条件拦截: method={}, stage={}, result={}, reason={}",
+                method, stage, result.resultCode(), result.reason());
+        hmsSimulator.publishAlarm(result.alarm());
+        return result;
+    }
+
+    /**
      * flighttask_prepare：任务准备。回复 result=0，更新 dock 状态。
+     * <p>先执行设备端异常条件检查（风速/雨量/电量/供电/温度/急停/未标定等），
+     * 命中时返回官方错误码并联动上报 HMS，且不改变任何设备状态——
+     * 真实机场此时是"可恢复的拒绝"，舱盖不打开、mode_code 不变。</p>
      */
     private Map<String, Object> handlePrepare(JsonNode data) {
+        var blocked = checkAbnormal(AbnormalConditionChecker.Stage.PREPARE, ServiceMethod.FLIGHTTASK_PREPARE.methodName());
+        if (blocked.blocked()) {
+            return Map.of("result", blocked.resultCode());
+        }
         stopRouteTask();
         routeEngine.clear();
         if (data != null) {
@@ -543,8 +570,14 @@ public class WaylineTaskSimulator {
     /**
      * flighttask_execute：任务执行。回复 result=0，启动异步进度推进。
      * <p>解析 multi_dock_task 蛙跳任务参数（如有），当前仅解析记录，未用于执行逻辑。</p>
+     * <p>执行前重跑异常条件检查：prepare 与 execute 之间环境可能已变化（真实机场同样会在
+     * 起飞前复查）。命中时返回官方错误码并联动 HMS，不修改任何飞行状态。</p>
      */
     private Map<String, Object> handleExecute(JsonNode data) {
+        var blocked = checkAbnormal(AbnormalConditionChecker.Stage.EXECUTE, ServiceMethod.FLIGHTTASK_EXECUTE.methodName());
+        if (blocked.blocked()) {
+            return Map.of("result", blocked.resultCode());
+        }
         if (data != null) {
             var req = MessageCodec.fromJson(data.toString(), FlighttaskExecuteRequest.class);
             currentFlightId = req.flightId();
@@ -908,6 +941,16 @@ public class WaylineTaskSimulator {
             return;
         }
         try {
+            // 飞行期异常中断：风速过大（784）/ 低电量（773）时飞控自主返航，任务终结。
+            // 必须在步骤分支之前检查——无 KMZ 时走兼容步骤路径同样处于飞行中，
+            // 若只在 RUNNING 分支内检查，兼容路径永远不会触发中断。
+            if (isAirborne()) {
+                int breakReason = AbnormalConditionChecker.checkInFlight(state);
+                if (breakReason != 0) {
+                    abortInFlight(breakReason);
+                    return;
+                }
+            }
             if (routeEngine.status() == WaylineFlightEngine.Status.RUNNING) {
                 currentStepIndex = 2;
                 int percent = Math.max(20, Math.min(95,
@@ -944,6 +987,25 @@ public class WaylineTaskSimulator {
     }
 
     /**
+     * 判断飞行器当前是否处于空中（飞行期）。
+     * <p>飞行期异常检查的适用范围：只有真正离舱/在飞的任务才应因环境异常被打断，
+     * 地面态（步骤 0 开机检查、步骤 5 通知结果）不应触发低电量返航语义。
+     * <p>判据优先用 KMZ 引擎状态；无 KMZ 时退回 mode_code 与 drone_in_dock 组合。
+     */
+    private boolean isAirborne() {
+        if (routeEngine.status() == WaylineFlightEngine.Status.RUNNING) {
+            return true;
+        }
+        if (routeEngine.hasPlan()) {
+            return false;
+        }
+        // 兼容路径（无 KMZ）：droneModeCode ∈ {4 自动起飞, 5 航线飞行, 9 返航, 10 降落} 视为在飞
+        int modeCode = state.getDroneModeCode();
+        return !state.isDroneInDock()
+                && (modeCode == 4 || modeCode == 5 || modeCode == 9 || modeCode == 10);
+    }
+
+    /**
      * 任务完成：停止推进，发 return_home_info，重置状态。
      */
     private void completeTask() {
@@ -966,6 +1028,54 @@ public class WaylineTaskSimulator {
         if (finishedFlightId != null) {
             CompletableFuture.runAsync(() -> mediaUploadSimulator.simulateMediaUpload(finishedFlightId, 3));
         }
+    }
+
+    /**
+     * 飞行期异常中断：飞控因异常条件自主返航，任务终结（不可断点续飞）。
+     *
+     * <p>与 {@link #completeTask()} 的区别：
+     * <ul>
+     *   <li>上报 {@code status=failed} + 指定 {@code break_reason}（773 低电量 / 784 大风），
+     *       而非 {@code status=ok}</li>
+     *   <li>上报 {@code return_home_info} 让平台能画出返航轨迹</li>
+     *   <li>不触发落地后的媒体批量上传（真实设备中断任务不保证媒体完整）</li>
+     * </ul>
+     *
+     * <p>必须同时停止 progressTask / routeTask / 插值，否则 {@code advanceProgress} 会继续
+     * 发送 {@code in_progress} 乃至 {@code ok}，平台将看到"失败→继续→成功"的矛盾序列。
+     *
+     * @param breakReason 中断原因码（773=低电量返航，784=大风返航）
+     */
+    private void abortInFlight(int breakReason) {
+        String flightId = currentFlightId;
+        int stepIndex = Math.min(currentStepIndex, STEP_PERCENTS.length - 1);
+        int percent = STEP_PERCENTS[stepIndex];
+
+        // 先停调度，避免本条 failed 事件之后又被 in_progress/ok 覆盖
+        stopProgressTask();
+        stopRouteTask();
+        stopInterpolation();
+        routeEngine.stop();
+
+        publishProgress("failed", stepIndex, percent, breakReason);
+        publishReturnHomeInfo();
+
+        // 飞行器转入自动返航（mode_code=9），随后延迟归舱恢复待机。
+        // 必须调度归舱：否则 mode_code=9 会永久卡住，平台看到飞行器永远"返航中"。
+        state.setDroneModeCode(9);
+        state.setHorizontalSpeed(0.0);
+        state.setVerticalSpeed(0.0);
+        // 归舱延迟按当前离舱距离估算（10 m/s 巡航），最少 5 秒，避免远距离返航瞬间完成
+        double homeDistance = state.getHomeDistance();
+        long returnDelaySeconds = Math.max(RETURN_HOME_DELAY_SECONDS,
+                Math.round(homeDistance / 10.0));
+        scheduler.schedule(this::completeReturnHome, returnDelaySeconds, TimeUnit.SECONDS);
+
+        resetTaskState();
+
+        log.warn("飞行中异常中断，已自主返航: flightId={}, breakReason={}, percent={}, "
+                        + "homeDistance={}m, 预计 {}s 后归舱",
+                flightId, breakReason, percent, Math.round(homeDistance), returnDelaySeconds);
     }
 
     /**
@@ -1216,6 +1326,9 @@ public class WaylineTaskSimulator {
      * 发送 failed 状态的 flighttask_progress，使用指定的 break_reason。
      * <p>使用当前任务步骤和进度。break_reason 按当前 Dock 型号校验，非法值拒绝发送。</p>
      * <p>529=障碍物/禁飞区域航线无法到达（dock2 专有）；773=低电量返航；784=大风返航（三版本通用）。</p>
+     * <p>若当前有任务在执行，发送后会一并终止任务与返航，避免 failed 之后又被
+     * {@code advanceProgress} 覆盖成 {@code in_progress}/{@code ok}，造成"失败→继续→成功"的矛盾序列。
+     * 无任务在执行时仅发送事件（供人工验证报文结构）。</p>
      *
      * @param breakReason 中断原因码（按型号合法值见 isBreakReasonValid）
      * @return true=已发送；false=break_reason 在当前 Dock 型号非法，未发送
@@ -1227,6 +1340,10 @@ public class WaylineTaskSimulator {
             diagnosticRecorder.record(DiagnosticCode.PLATFORM_DOCK_CAPABILITY_MISMATCH, "flighttask_progress",
                     "break_reason=" + breakReason + " 在 Dock " + runtimeConfig.getDockType().shortName() + " 中非法");
             return false;
+        }
+        if (currentFlightId != null) {
+            abortInFlight(breakReason);
+            return true;
         }
         int stepIndex = currentStepIndex;
         int percent = STEP_PERCENTS[Math.min(stepIndex, STEP_PERCENTS.length - 1)];

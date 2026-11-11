@@ -50,7 +50,9 @@ public abstract class AbstractDroneOsdBuilder implements DroneOsdBuilder {
         data.put(OsdField.HORIZONTAL_SPEED.fieldName(), state.getHorizontalSpeed());
         data.put(OsdField.VERTICAL_SPEED.fieldName(), state.getVerticalSpeed());
         // TC-BUILDER-014-WIND：飞行器 OSD wind_speed 用 droneWindSpeed（飞行器环境风速），与机场 OSD wind_speed（机场环境风速）分离
-        data.put(OsdField.WIND_SPEED.fieldName(), state.getDroneWindSpeed() * 10);  // DJI 文档单位 0.1 m/s，上报值 ×10 转换
+        // wind_speed 单位 m/s，float，直接上报不做换算（DJI 飞行器 properties 文档：风速估计，float，无 0.1 单位换算；
+        // droneWindSpeed 内部同样是 m/s）
+        data.put(OsdField.WIND_SPEED.fieldName(), state.getDroneWindSpeed());
         data.put(OsdField.WIND_DIRECTION.fieldName(), state.getWindDirection());
         data.put(OsdField.BATTERY.fieldName(), buildBattery(ctx));
         data.put(OsdField.POSITION_STATE.fieldName(), buildPositionState(ctx));

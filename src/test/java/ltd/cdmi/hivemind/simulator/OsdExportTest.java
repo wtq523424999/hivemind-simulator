@@ -106,7 +106,8 @@ class OsdExportTest {
                 Mockito.mock(ltd.cdmi.hivemind.simulator.handler.PilotHttpSimulator.class),
                 Mockito.mock(ltd.cdmi.hivemind.simulator.ws.MopClient.class),
                 Mockito.mock(ltd.cdmi.hivemind.simulator.mqtt.DrcConnectionManager.class),
-                Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class)
+                Mockito.mock(ltd.cdmi.hivemind.simulator.device.StatePushService.class),
+                Mockito.mock(ltd.cdmi.hivemind.simulator.device.DockEnvStateStore.class)
         );
     }
 

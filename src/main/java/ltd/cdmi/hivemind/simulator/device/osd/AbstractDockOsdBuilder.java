@@ -70,12 +70,14 @@ public abstract class AbstractDockOsdBuilder implements DockOsdBuilder {
         positionAndEnv.put(OsdField.DRONE_CHARGE_STATE.fieldName(), buildDroneChargeState(state));
         positionAndEnv.put(OsdField.TEMPERATURE.fieldName(), state.getDockTemperature());
         positionAndEnv.put(OsdField.HUMIDITY.fieldName(), state.getDockHumidity());
-        positionAndEnv.put(OsdField.WIND_SPEED.fieldName(), state.getWindSpeed() * 10);  // DJI 文档单位 0.1 m/s，上报值 ×10 转换
+        // wind_speed 单位 m/s，float，直接上报不做换算（DJI Dock1/Dock2 properties 文档：
+        // {unit_name: "米每秒 / m/s"}；DeviceState.windSpeed 内部同样是 m/s）
+        positionAndEnv.put(OsdField.WIND_SPEED.fieldName(), state.getWindSpeed());
         positionAndEnv.put(OsdField.RAINFALL.fieldName(), state.getRainfall());
-        positionAndEnv.put(OsdField.ENVIRONMENT_TEMPERATURE.fieldName(), 25.0);      // 环境温度（°C）
+        positionAndEnv.put(OsdField.ENVIRONMENT_TEMPERATURE.fieldName(), state.getEnvironmentTemperature()); // 环境温度（°C）
         positionAndEnv.put(OsdField.SUPPLEMENT_LIGHT_STATE.fieldName(), 0);
         positionAndEnv.put(OsdField.AIR_CONDITIONER.fieldName(), buildAirConditioner()); // 机场空调（struct，Dock1 OSD 示例误用 air_conditioner_mode 标量，以属性列表为准）
-        positionAndEnv.put(OsdField.EMERGENCY_STOP_STATE.fieldName(), 0);               // 紧急停止按钮状态紧急停止按钮关闭
+        positionAndEnv.put(OsdField.EMERGENCY_STOP_STATE.fieldName(), state.isEmergencyStopPressed() ? 1 : 0); // 紧急停止按钮状态
         positionAndEnv.put(OsdField.ALARM_STATE.fieldName(), 0);                     // 机场声光报警关闭
         positionAndEnv.put(OsdField.BATTERY_STORE_MODE.fieldName(), 2);              // 待命模式
         positionAndEnv.put(OsdField.ALTERNATE_LAND_POINT.fieldName(), buildAlternateLandPoint());

@@ -103,6 +103,7 @@ public class FlightCommandSimulator {
     private final RuntimeConfig runtimeConfig;
     private final DiagnosticLogRecorder diagnosticRecorder;
     private final DockTopicSchema dockTopicSchema;
+    private final HmsSimulator hmsSimulator;
     private final ScheduledExecutorService scheduler;
 
     /** fly_to_point 延迟任务引用（wayline_progress + wayline_ok），fly_to_point_stop 时取消 */
@@ -121,13 +122,15 @@ public class FlightCommandSimulator {
     public FlightCommandSimulator(SimulatorProperties props, MqttClientManager mqtt,
                                    DeviceState state, RuntimeConfig runtimeConfig,
                                    DiagnosticLogRecorder diagnosticRecorder,
-                                   DockTopicSchema dockTopicSchema) {
+                                   DockTopicSchema dockTopicSchema,
+                                   HmsSimulator hmsSimulator) {
         this.props = props;
         this.mqtt = mqtt;
         this.state = state;
         this.runtimeConfig = runtimeConfig;
         this.diagnosticRecorder = diagnosticRecorder;
         this.dockTopicSchema = dockTopicSchema;
+        this.hmsSimulator = hmsSimulator;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "flight-cmd-scheduler");
             t.setDaemon(true);
@@ -141,6 +144,24 @@ public class FlightCommandSimulator {
     }
 
     // ==================== Service 指令处理 ====================
+
+    /**
+     * 执行设备端异常条件检查（起飞前），命中时联动上报 HMS。
+     *
+     * @param method 触发检查的命令名（仅用于日志）
+     * @return 判定结果；调用方应据此返回 {@code result=resultCode}
+     */
+    private AbnormalConditionChecker.BlockResult checkAbnormal(String method) {
+        AbnormalConditionChecker.BlockResult result =
+                AbnormalConditionChecker.check(state, AbnormalConditionChecker.Stage.EXECUTE);
+        if (!result.blocked()) {
+            return result;
+        }
+        log.warn("指令飞行被异常条件拦截: method={}, result={}, reason={}",
+                method, result.resultCode(), result.reason());
+        hmsSimulator.publishAlarm(result.alarm());
+        return result;
+    }
 
     /**
      * 处理 fly_to_point 指令（异步双阶段确认）。
@@ -396,6 +417,14 @@ public class FlightCommandSimulator {
      * @return services_reply 的 output（含 result 字段）
      */
     public Map<String, Object> handle(String method, JsonNode data, String bid) {
+        // 起飞/飞行类命令先做设备端异常条件检查：真实机场在每个起飞入口都会复查环境与状态
+        if (ServiceMethod.TAKEOFF_TO_POINT.methodName().equals(method)
+                || ServiceMethod.FLY_TO_POINT.methodName().equals(method)) {
+            var blocked = checkAbnormal(method);
+            if (blocked.blocked()) {
+                return Map.of("result", blocked.resultCode());
+            }
+        }
         if (ServiceMethod.FLY_TO_POINT.methodName().equals(method)) return handleFlyToPoint(data, bid);
         if (ServiceMethod.FLY_TO_POINT_STOP.methodName().equals(method)) return handleFlyToPointStop(bid);
         if (ServiceMethod.FLY_TO_POINT_UPDATE.methodName().equals(method)) return handleFlyToPointUpdate(data);

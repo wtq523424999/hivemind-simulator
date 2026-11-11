@@ -1045,6 +1045,11 @@ const app = createApp({
             windSpeed: 3,
             droneWindSpeed: 3,  // 飞行器环境风速（飞行器 OSD wind_speed 用此字段，与机场 windSpeed 分离）
             windDirection: 1,  // 风向 8 方位（1=正北…8=西北），仅飞行器 OSD 上报
+            rainfall: 0,  // 降雨等级：0=无雨,1=小雨,2=中雨,3=大雨
+            environmentTemperature: 25,  // 环境温度（OSD environment_temperature）
+            powerSupplyNormal: true,  // false=机场供电断开，拒飞
+            emergencyStopPressed: false,  // true=急停被按下，拒飞
+            dockCalibrated: true,  // false=机场未标定，拒飞
             coverOpen: false,
             droneInDock: true,
             droneActivated: false,
@@ -1436,6 +1441,11 @@ const app = createApp({
             assign('windSpeed', data.windSpeed);
             assign('droneWindSpeed', data.droneWindSpeed ?? 3);
             assign('windDirection', data.windDirection ?? 1);
+            assign('rainfall', data.rainfall ?? 0);
+            assign('environmentTemperature', data.environmentTemperature ?? 25);
+            assign('powerSupplyNormal', data.powerSupplyNormal ?? true);
+            assign('emergencyStopPressed', data.emergencyStopPressed ?? false);
+            assign('dockCalibrated', data.dockCalibrated ?? true);
             assign('coverOpen', data.coverOpen);
             assign('droneInDock', data.droneInDock);
             assign('droneActivated', data.droneActivated ?? false);

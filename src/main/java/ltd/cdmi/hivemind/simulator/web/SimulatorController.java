@@ -19,6 +19,7 @@ import ltd.cdmi.hivemind.simulator.config.RuntimeConfig;
 import ltd.cdmi.hivemind.simulator.config.SimulatorProperties;
 import ltd.cdmi.hivemind.simulator.device.DeviceMode;
 import ltd.cdmi.hivemind.simulator.device.DeviceState;
+import ltd.cdmi.hivemind.simulator.device.DockEnvStateStore;
 import ltd.cdmi.dji.cloudapi.sdk.model.DockModel;
 import ltd.cdmi.dji.cloudapi.sdk.model.DroneModel;
 import ltd.cdmi.dji.cloudapi.sdk.model.RcModel;
@@ -131,6 +132,7 @@ public class SimulatorController {
     private final MopClient mopClient;
     private final DrcConnectionManager drcConnections;
     private final StatePushService statePushService;
+    private final DockEnvStateStore envStateStore;
 
     /** 应用版本号：从 Jar MANIFEST 读取（Spring Boot Maven Plugin 自动写入 Implementation-Version），
      * IDE 开发模式下为 null，回退为 "dev"。 */
@@ -160,7 +162,8 @@ public class SimulatorController {
                                PilotHttpSimulator pilotHttpSimulator,
                                MopClient mopClient,
                                DrcConnectionManager drcConnections,
-                               StatePushService statePushService) {
+                               StatePushService statePushService,
+                               DockEnvStateStore envStateStore) {
         this.onlineService = onlineService;
         this.pilotOnlineService = pilotOnlineService;
         this.state = state;
@@ -192,6 +195,7 @@ public class SimulatorController {
         this.mopClient = mopClient;
         this.drcConnections = drcConnections;
         this.statePushService = statePushService;
+        this.envStateStore = envStateStore;
         // 读取 Jar 版本号：IDE 开发模式下 Implementation-Version 为 null，回退为 "dev"
         String implVer = getClass().getPackage().getImplementationVersion();
         this.appVersion = (implVer != null && !implVer.isBlank()) ? implVer : "dev";
@@ -304,7 +308,13 @@ public class SimulatorController {
         if (updates.containsKey("dockTemperature")) state.setDockTemperature(((Number) updates.get("dockTemperature")).doubleValue());
         if (updates.containsKey("dockHumidity")) state.setDockHumidity(((Number) updates.get("dockHumidity")).doubleValue());
         if (updates.containsKey("windSpeed")) state.setWindSpeed(((Number) updates.get("windSpeed")).doubleValue());
+        if (updates.containsKey("droneWindSpeed")) state.setDroneWindSpeed(((Number) updates.get("droneWindSpeed")).doubleValue());
+        if (updates.containsKey("windDirection")) state.setWindDirection(((Number) updates.get("windDirection")).intValue());
         if (updates.containsKey("rainfall")) state.setRainfall(((Number) updates.get("rainfall")).intValue());
+        if (updates.containsKey("environmentTemperature")) state.setEnvironmentTemperature(((Number) updates.get("environmentTemperature")).doubleValue());
+        if (updates.containsKey("powerSupplyNormal")) state.setPowerSupplyNormal(Boolean.parseBoolean(String.valueOf(updates.get("powerSupplyNormal"))));
+        if (updates.containsKey("emergencyStopPressed")) state.setEmergencyStopPressed(Boolean.parseBoolean(String.valueOf(updates.get("emergencyStopPressed"))));
+        if (updates.containsKey("dockCalibrated")) state.setDockCalibrated(Boolean.parseBoolean(String.valueOf(updates.get("dockCalibrated"))));
         if (updates.containsKey("coverOpen")) state.setCoverOpen(Boolean.parseBoolean(String.valueOf(updates.get("coverOpen"))));
         if (updates.containsKey("droneInDock")) state.setDroneInDock(Boolean.parseBoolean(String.valueOf(updates.get("droneInDock"))));
         if (updates.containsKey("droneActivated")) {
@@ -348,6 +358,9 @@ public class SimulatorController {
         // Pilot 模式遥控器电量（capacity_percent），Dock 模式忽略此字段
         if (updates.containsKey("controllerCapacity")) state.setControllerCapacity(((Number) updates.get("controllerCapacity")).intValue());
         statePushService.publishGatewayState(stateChanges);
+        // 环境参数落盘：这些字段是 pushMode=0，只在下次 OSD 带出，重启后会丢失，
+        // 必须单独持久化才能保证"改过的值重启后仍可复现"（拒飞判定依赖它们）
+        envStateStore.persist();
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("success", true);
         result.put("state", state);

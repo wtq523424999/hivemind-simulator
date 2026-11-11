@@ -21,6 +21,7 @@ import ltd.cdmi.hivemind.simulator.config.RuntimeConfig;
 import ltd.cdmi.hivemind.simulator.config.SimulatorProperties;
 import ltd.cdmi.hivemind.simulator.device.DeviceState;
 import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticLogRecorder;
+import ltd.cdmi.hivemind.simulator.handler.HmsSimulator;
 import ltd.cdmi.hivemind.simulator.handler.FlightCommandSimulator;
 import ltd.cdmi.hivemind.simulator.mqtt.DockTopicSchema;
 import ltd.cdmi.hivemind.simulator.mqtt.MqttClientManager;
@@ -57,6 +58,7 @@ class FlightInterpolationTest {
         RuntimeConfig rc = Mockito.mock(RuntimeConfig.class);
         Mockito.when(rc.getDockType()).thenReturn(DockModel.DOCK3);
         Mockito.when(rc.getDockSn()).thenReturn("DOCK3-SN");
+        Mockito.when(rc.getGatewaySn()).thenReturn("DOCK3-SN");
         Mockito.when(rc.getLocationLatitude()).thenReturn(30.67);
         Mockito.when(rc.getLocationLongitude()).thenReturn(104.07);
         Mockito.when(rc.getLocationHeight()).thenReturn(500.0);
@@ -68,7 +70,7 @@ class FlightInterpolationTest {
         Mockito.when(mqtt.isConnected()).thenReturn(true);
         return new FlightCommandSimulator(
                 testProps(), mqtt, state, runtimeConfig(),
-                Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema());
+                Mockito.mock(DiagnosticLogRecorder.class), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
     }
 
     /** 反射调用 startFlightInterpolation */

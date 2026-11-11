@@ -74,6 +74,9 @@ class PropertySetHandlerTest {
     /** 最近一次 property/set 触发的 state 变化上报（pushMode=1 增量） */
     private StatePushService lastStatePush;
 
+    /** 最近一次 property/set 使用的环境参数存储（验证落盘调用） */
+    private ltd.cdmi.hivemind.simulator.device.DockEnvStateStore lastEnvStore;
+
     /** 构造指定 Dock 版本的 PropertySetHandler 并触发一次 property/set 回调 */
     private JsonNode firePropertySet(String setDataJson, DeviceState state, DockModel dockType) throws Exception {
         ObjectMapper objectMapper = new ObjectMapper();
@@ -83,10 +86,11 @@ class PropertySetHandlerTest {
         RuntimeConfig rc = testRuntimeConfig();
         rc.setDockType(dockType);
         lastStatePush = Mockito.mock(StatePushService.class);
+        lastEnvStore = Mockito.mock(ltd.cdmi.hivemind.simulator.device.DockEnvStateStore.class);
 
         PropertySetHandler handler = new PropertySetHandler(
                 testProps(), mqtt, state, objectMapper, diag, cov, rc, new DockTopicSchema(),
-                lastStatePush);
+                lastStatePush, lastEnvStore);
         handler.init();
 
         // 捕获 addListener 注册的回调
@@ -209,5 +213,56 @@ class PropertySetHandlerTest {
         // 仍回复 set_reply（result=0）
         assertEquals(0, reply.path("data").path("air_transfer_enable").path("result").asInt(),
                 "Dock1 仍应回复 set_reply result=0");
+    }
+
+    // ==================== 环境参数 property/set（回归：曾只回 result=0 不更新状态） ====================
+
+    @DisplayName("环境参数：temperature/humidity/rainfall/environment_temperature 经 property/set 真实生效")
+    @Test
+    void environmentPropertiesUpdateDeviceState() throws Exception {
+        DeviceState state = new DeviceState();
+        JsonNode reply = firePropertySet(
+                "{\"temperature\": 33.5, \"humidity\": 66, \"rainfall\": 2, \"environment_temperature\": 41.5}",
+                state);
+
+        assertEquals(33.5, state.getDockTemperature(), 1e-9, "temperature 应写入 DeviceState");
+        assertEquals(66.0, state.getDockHumidity(), 1e-9, "humidity 应写入 DeviceState");
+        assertEquals(2, state.getRainfall(), "rainfall 应写入 DeviceState");
+        assertEquals(41.5, state.getEnvironmentTemperature(), 1e-9, "environment_temperature 应写入 DeviceState");
+        // 环境参数是 pushMode=0，不走 state topic 增量；但仍必须回 set_reply 成功
+        assertEquals(0, reply.path("data").path("temperature").path("result").asInt(), "应回复 result=0");
+        assertEquals(0, reply.path("data").path("rainfall").path("result").asInt(), "rainfall 应回复 result=0");
+    }
+
+    @DisplayName("环境参数：wind_speed 以 m/s 直接写入 DeviceState（不换算）")
+    @Test
+    void windSpeedPropertySetStoresMetersPerSecond() throws Exception {
+        DeviceState state = new DeviceState();
+        assertEquals(3.0, state.getWindSpeed(), 1e-9, "默认风速 3.0 m/s");
+
+        // DJI Dock properties 文档：wind_speed 单位「米每秒 / m/s」，与 DeviceState 一致，不做换算
+        firePropertySet("{\"wind_speed\": 7.5}", state);
+        assertEquals(7.5, state.getWindSpeed(), 1e-9,
+                "wind_speed 下发值单位为 m/s，应原样写入 DeviceState");
+    }
+
+    @DisplayName("环境参数：cover_state / emergency_stop_state 经 property/set 真实生效")
+    @Test
+    void booleanEnvPropertiesUpdateDeviceState() throws Exception {
+        DeviceState state = new DeviceState();
+        assertFalse(state.isCoverOpen(), "默认舱盖关闭");
+        assertFalse(state.isEmergencyStopPressed(), "默认急停未按下");
+
+        firePropertySet("{\"cover_state\": 1, \"emergency_stop_state\": 1}", state);
+        assertTrue(state.isCoverOpen(), "cover_state=1 应写入舱盖打开");
+        assertTrue(state.isEmergencyStopPressed(), "emergency_stop_state=1 应写入急停按下");
+    }
+
+    @DisplayName("环境参数：property/set 后环境参数被持久化")
+    @Test
+    void environmentPropertiesArePersisted() throws Exception {
+        DeviceState state = new DeviceState();
+        firePropertySet("{\"wind_speed\": 9.5}", state);
+        Mockito.verify(lastEnvStore).persist();
     }
 }

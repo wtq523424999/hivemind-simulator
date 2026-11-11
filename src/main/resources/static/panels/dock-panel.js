@@ -23,6 +23,8 @@ function registerDockPanel(app) {
             const hmsOptions = [
                 { value: 'wind_high',       label: '风速过大（≥9 m/s）' },
                 { value: 'rain_heavy',      label: '雨量过大' },
+                { value: 'power_lost',      label: '设备供电电源断开' },
+                { value: 'temperature_low', label: '低温预警（≤-20℃）' },
                 { value: 'signal_weak',     label: '图传信号弱' },
                 { value: 'signal_lost',     label: '图传信号丢失' },
                 { value: 'altitude_limit',  label: '高度超限' },
@@ -619,41 +621,67 @@ function registerDockPanel(app) {
                     <!-- 机场环境组（字段对应机场 OSD：temperature/humidity/wind_speed/cover_state/silent_mode） -->
                     <div class="state-group-title">机场环境</div>
                     <el-form-item label="温度(℃)">
-                        <el-input-number v-model="editState.dockTemperature" :precision="1" :step="0.5" size="small" @change="saveState"></el-input-number>
+                        <el-input-number v-model="editState.dockTemperature" :precision="1" :step="0.5" size="small" @change="saveState('dockTemperature')"></el-input-number>
                     </el-form-item>
                     <el-form-item label="湿度(%)">
-                        <el-input-number v-model="editState.dockHumidity" :min="0" :max="100" :step="1" size="small" @change="saveState"></el-input-number>
+                        <el-input-number v-model="editState.dockHumidity" :min="0" :max="100" :step="1" size="small" @change="saveState('dockHumidity')"></el-input-number>
+                    </el-form-item>
+                    <el-form-item label="环境温度(℃)">
+                        <el-input-number v-model="editState.environmentTemperature" :precision="1" :step="1" size="small" @change="saveState('environmentTemperature')"></el-input-number>
+                        <span class="state-field-hint">低于 -20℃ 拒飞（514137）</span>
                     </el-form-item>
                     <el-form-item label="风速(m/s)">
-                        <el-input-number v-model="editState.windSpeed" :min="0" :step="0.5" size="small" @change="saveState"></el-input-number>
+                        <el-input-number v-model="editState.windSpeed" :min="0" :step="0.5" size="small" @change="saveState('windSpeed')"></el-input-number>
+                        <span class="state-field-hint">≥9 m/s 拒飞（514135）</span>
+                    </el-form-item>
+                    <el-form-item label="降雨量">
+                        <el-select v-model="editState.rainfall" size="small" style="width: 140px;" @change="saveState('rainfall')">
+                            <el-option :value="0" label="0 · 无雨"></el-option>
+                            <el-option :value="1" label="1 · 小雨"></el-option>
+                            <el-option :value="2" label="2 · 中雨"></el-option>
+                            <el-option :value="3" label="3 · 大雨"></el-option>
+                        </el-select>
+                        <span class="state-field-hint">≥中雨拒飞（514134）</span>
+                    </el-form-item>
+                    <el-form-item label="供电正常">
+                        <el-switch v-model="editState.powerSupplyNormal" @change="saveState('powerSupplyNormal')"></el-switch>
+                        <span class="state-field-hint">关闭表示供电断开（514136）</span>
+                    </el-form-item>
+                    <el-form-item label="急停按钮">
+                        <el-switch v-model="editState.emergencyStopPressed" @change="saveState('emergencyStopPressed')"></el-switch>
+                        <span class="state-field-hint">按下拒飞（514121）</span>
+                    </el-form-item>
+                    <el-form-item label="已标定">
+                        <el-switch v-model="editState.dockCalibrated" @change="saveState('dockCalibrated')"></el-switch>
+                        <span class="state-field-hint">未标定拒飞（514168）</span>
                     </el-form-item>
                     <el-form-item label="舱盖">
-                        <el-switch v-model="editState.coverOpen" @change="saveState"></el-switch>
+                        <el-switch v-model="editState.coverOpen" @change="saveState('coverOpen')"></el-switch>
                     </el-form-item>
                     <el-form-item v-if="connConfig.dock_type === 'DOCK1' || connConfig.dock_type === 'DOCK2'" label="静音模式">
-                        <el-switch v-model="editState.silentMode" :active-value="1" :inactive-value="0" @change="saveState"></el-switch>
+                        <el-switch v-model="editState.silentMode" :active-value="1" :inactive-value="0" @change="saveState('silentMode')"></el-switch>
                     </el-form-item>
 
                     <!-- 飞行器组（字段对应飞行器 OSD：capacity_percent/wind_speed/wind_direction；电量也用于机场 OSD drone_charge_state） -->
                     <div class="state-group-title">飞行器</div>
                     <el-form-item label="在舱/激活">
-                        <el-switch v-model="editState.droneInDock" @change="saveState"></el-switch>
+                        <el-switch v-model="editState.droneInDock" @change="saveState('droneInDock')"></el-switch>
                         <el-tag size="small" :type="flightModeTagType" :class="{ 'drone-flying': isDroneFlying }" effect="dark" style="margin-left: 4px;">
                             <span class="drone-flying-dot" v-if="isDroneFlying"></span>{{ flightModeLabel }}
                         </el-tag>
-                        <el-radio-group v-model="editState.droneActivated" size="small" @change="saveState" style="margin-left: 12px;">
+                        <el-radio-group v-model="editState.droneActivated" size="small" @change="saveState('droneActivated')" style="margin-left: 12px;">
                             <el-radio-button :value="false">休眠</el-radio-button>
                             <el-radio-button :value="true">激活</el-radio-button>
                         </el-radio-group>
                     </el-form-item>
                     <el-form-item label="电量(%)">
-                        <el-slider v-model="editState.batteryPercent" :min="0" :max="100" @change="saveState"></el-slider>
+                        <el-slider v-model="editState.batteryPercent" :min="0" :max="100" @change="saveState('batteryPercent')"></el-slider>
                     </el-form-item>
                     <el-form-item label="风速(m/s)">
-                        <el-input-number v-model="editState.droneWindSpeed" :min="0" :step="0.5" size="small" @change="saveState"></el-input-number>
+                        <el-input-number v-model="editState.droneWindSpeed" :min="0" :step="0.5" size="small" @change="saveState('droneWindSpeed')"></el-input-number>
                     </el-form-item>
                     <el-form-item label="风向">
-                        <el-select v-model="editState.windDirection" :disabled="!editState.droneActivated" @change="saveState" size="small" style="width: 140px;">
+                        <el-select v-model="editState.windDirection" :disabled="!editState.droneActivated" @change="saveState('windDirection')" size="small" style="width: 140px;">
                             <el-option v-for="opt in windDirectionOptions" :key="opt.value" :label="opt.label" :value="opt.value"></el-option>
                         </el-select>
                         <span class="state-field-hint" v-if="!editState.droneActivated">需先激活飞行器</span>

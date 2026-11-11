@@ -53,12 +53,11 @@ public class DeviceState {
     /** 无人机充电状态：0=未充电,1=充电中,2=充满 */
     private volatile int droneChargeState = 2;
     /** 供电电压 (V) */
-    private volatile double electricSupplyVoltage = 230.0;
-    /** 机场温度 (℃) */
+    private volatile double electricSupplyVoltage = 230.0;    /** 机场温度 (℃) */
     private volatile double dockTemperature = 25.0;
     /** 机场湿度 (%) */
     private volatile double dockHumidity = 50.0;
-    /** 风速（m/s，上报时 ×10 转换为 0.1 m/s 单位，DJI 文档定义 wind_speed 单位为 0.1 m/s） */
+    /** 风速（m/s，与 OSD wind_speed 同单位，直接上报不换算） */
     private volatile double windSpeed = 3.0;
     /** 飞行器环境风速（m/s，飞行器 OSD wind_speed 用此字段，与机场 windSpeed 分离） */
     private volatile double droneWindSpeed = 3.0;
@@ -66,6 +65,14 @@ public class DeviceState {
     private volatile int windDirection = 1;
     /** 降雨等级：0=无雨,1=小雨,2=中雨,3=大雨 */
     private volatile int rainfall = 0;
+    /** 环境温度（℃，OSD environment_temperature）。Dock3 低于 -20℃ 拒飞（514137），低于 5℃ 且降雨≥中雨拒飞（514173） */
+    private volatile double environmentTemperature = 25.0;
+    /** 机场供电是否正常：false=供电断开，拒飞（514136）。对应 HMS 0x19113803 设备供电电源断开 */
+    private volatile boolean powerSupplyNormal = true;
+    /** 急停按钮是否被按下：true=已按下，拒飞（514121） */
+    private volatile boolean emergencyStopPressed = false;
+    /** 机场是否已标定：false=未标定，拒飞（514168） */
+    private volatile boolean dockCalibrated = true;
     /** 备用电池温度 (°C) */
     private volatile double backupBatteryTemperature = 25.0;
     /** 机场静音模式：0=非静音, 1=静音（三版共有，accessMode=rw，可通过 property/set 设置） */

@@ -23,6 +23,7 @@ import ltd.cdmi.hivemind.simulator.device.DeviceMode;
 import ltd.cdmi.hivemind.simulator.device.DeviceState;
 import ltd.cdmi.dji.cloudapi.sdk.model.DockModel;
 import ltd.cdmi.dji.cloudapi.sdk.model.RcModel;
+import ltd.cdmi.hivemind.simulator.handler.HmsSimulator;
 import ltd.cdmi.hivemind.simulator.handler.FlightCommandSimulator;
 import ltd.cdmi.hivemind.simulator.diagnostic.DiagnosticLogRecorder;
 import ltd.cdmi.hivemind.simulator.mqtt.DockTopicSchema;
@@ -116,7 +117,7 @@ class FlightCommandSimulatorTest {
         Mockito.when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // Dock3 下发含 rth_mode/commander_flight_mode/flight_safety_advance_check 的指令
         String json = """
@@ -161,7 +162,7 @@ class FlightCommandSimulatorTest {
         Mockito.when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // Dock1 不下发 rth_mode/commander_flight_mode/flight_safety_advance_check
         String json = """
@@ -200,7 +201,7 @@ class FlightCommandSimulatorTest {
         Mockito.when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // 平台下发 flight_safety_advance_check: true（boolean，非 1/0 整数）
         String json = """
@@ -239,7 +240,7 @@ class FlightCommandSimulatorTest {
         Mockito.when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         String json = """
                 {
@@ -271,7 +272,7 @@ class FlightCommandSimulatorTest {
         Mockito.when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         String json = """
                 {
@@ -326,7 +327,7 @@ class FlightCommandSimulatorTest {
         DiagnosticLogRecorder recorder = diagnosticRecorder();
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), recorder, new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), recorder, new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         String err = simulator.triggerRcLost();
 
@@ -363,7 +364,7 @@ class FlightCommandSimulatorTest {
         DiagnosticLogRecorder recorder = diagnosticRecorder();
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), recorder, new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), recorder, new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         simulator.triggerRcLost();
 
@@ -408,7 +409,7 @@ class FlightCommandSimulatorTest {
         DiagnosticLogRecorder recorder = diagnosticRecorder();
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), recorder, new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), recorder, new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         simulator.triggerRcLost();
 
@@ -446,7 +447,7 @@ class FlightCommandSimulatorTest {
         Mockito.when(mqtt.isConnected()).thenReturn(false);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         String err = simulator.triggerRcLost();
 
@@ -469,7 +470,7 @@ class FlightCommandSimulatorTest {
         DiagnosticLogRecorder recorder = Mockito.mock(DiagnosticLogRecorder.class);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), recorder, new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), recorder, new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         String json = """
                 {
@@ -522,7 +523,7 @@ class FlightCommandSimulatorTest {
         DiagnosticLogRecorder recorder = Mockito.mock(DiagnosticLogRecorder.class);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK1), recorder, new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK1), recorder, new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // Dock1 不下发 rth_mode 字段
         String json = """
@@ -564,7 +565,7 @@ class FlightCommandSimulatorTest {
         Mockito.when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         state.setDroneActivated(true);
         state.setDroneInDock(false);
@@ -613,7 +614,7 @@ class FlightCommandSimulatorTest {
         Mockito.when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // 机场椭球高 500（runtimeConfig mock），目标点椭球高 526（相对高度 26），安全起飞高度 20（ALT）
         // 目标点距机场约 50 米（插值 max_speed=12 → ~4.7s 水平到达；垂直 26m/3m/s → ~9.2s 到达）
@@ -661,7 +662,7 @@ class FlightCommandSimulatorTest {
         Mockito.when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         // 目标点椭球高 512（机场椭球高 500 → 相对高度 12），水平距离约 15 米
         // 插值：水平 15m/10m/s ≈ 1.5s 到达；垂直 12m/3m/s = 4s 到达 → 4.5s 时全部到达
@@ -691,7 +692,7 @@ class FlightCommandSimulatorTest {
         when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         JsonNode data = objectMapper.readTree("""
                 {"latitude":12.23,"longitude":12.23,"height":100}
@@ -719,7 +720,7 @@ class FlightCommandSimulatorTest {
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
                 testProps(), mqtt, state, pilotRuntimeConfig(RcModel.RC_PLUS_2),
-                diagnosticRecorder(), new DockTopicSchema());
+                diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         JsonNode data = objectMapper.readTree("""
                 {"latitude":12.23,"longitude":12.23,"height":100}
@@ -744,7 +745,7 @@ class FlightCommandSimulatorTest {
         when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         JsonNode data = objectMapper.readTree("""
                 {"latitude":12.23,"longitude":12.23,"height":100}
@@ -768,7 +769,7 @@ class FlightCommandSimulatorTest {
         ObjectMapper objectMapper = new ObjectMapper();
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Map<String, Object> reply = simulator.handlePoiModeExit();
 
@@ -792,7 +793,7 @@ class FlightCommandSimulatorTest {
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
                 testProps(), mqtt, state, pilotRuntimeConfig(RcModel.RC_PLUS_2),
-                diagnosticRecorder(), new DockTopicSchema());
+                diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Map<String, Object> reply = simulator.handlePoiModeExit();
 
@@ -812,7 +813,7 @@ class FlightCommandSimulatorTest {
         when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         Map<String, Object> reply = simulator.handlePoiModeExit();
 
@@ -832,7 +833,7 @@ class FlightCommandSimulatorTest {
         when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK1), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         JsonNode data = objectMapper.readTree("""
                 {"circle_speed":5.2}
@@ -856,7 +857,7 @@ class FlightCommandSimulatorTest {
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
                 testProps(), mqtt, state, pilotRuntimeConfig(RcModel.RC_PLUS_2),
-                diagnosticRecorder(), new DockTopicSchema());
+                diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         JsonNode data = objectMapper.readTree("""
                 {"circle_speed":5.2}
@@ -878,7 +879,7 @@ class FlightCommandSimulatorTest {
         when(mqtt.isConnected()).thenReturn(true);
 
         FlightCommandSimulator simulator = new FlightCommandSimulator(
-                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema());
+                testProps(), mqtt, state, runtimeConfig(DockModel.DOCK3), diagnosticRecorder(), new DockTopicSchema(), Mockito.mock(HmsSimulator.class));
 
         JsonNode data = objectMapper.readTree("""
                 {"circle_speed":5.2}
